@@ -1,5 +1,7 @@
 from tests.dialects.test_dialect import Validator
 
+from sqlglot import exp
+
 
 class TestHive(Validator):
     dialect = "hive"
@@ -187,6 +189,7 @@ class TestHive(Validator):
             "SELECT a, b FROM x LATERAL VIEW EXPLODE(y) t AS a LATERAL VIEW EXPLODE(z) u AS b",
             write={
                 "presto": "SELECT a, b FROM x CROSS JOIN UNNEST(y) AS t(a) CROSS JOIN UNNEST(z) AS u(b)",
+                "duckdb": "SELECT a, b FROM x CROSS JOIN UNNEST(y) AS t(a) CROSS JOIN UNNEST(z) AS u(b)",
                 "hive": "SELECT a, b FROM x LATERAL VIEW EXPLODE(y) t AS a LATERAL VIEW EXPLODE(z) u AS b",
                 "spark": "SELECT a, b FROM x LATERAL VIEW EXPLODE(y) t AS a LATERAL VIEW EXPLODE(z) u AS b",
             },
@@ -195,6 +198,7 @@ class TestHive(Validator):
             "SELECT a FROM x LATERAL VIEW EXPLODE(y) t AS a",
             write={
                 "presto": "SELECT a FROM x CROSS JOIN UNNEST(y) AS t(a)",
+                "duckdb": "SELECT a FROM x CROSS JOIN UNNEST(y) AS t(a)",
                 "hive": "SELECT a FROM x LATERAL VIEW EXPLODE(y) t AS a",
                 "spark": "SELECT a FROM x LATERAL VIEW EXPLODE(y) t AS a",
             },
@@ -211,6 +215,7 @@ class TestHive(Validator):
             "SELECT a FROM x LATERAL VIEW EXPLODE(ARRAY(y)) t AS a",
             write={
                 "presto": "SELECT a FROM x CROSS JOIN UNNEST(ARRAY[y]) AS t(a)",
+                "duckdb": "SELECT a FROM x CROSS JOIN UNNEST([y]) AS t(a)",
                 "hive": "SELECT a FROM x LATERAL VIEW EXPLODE(ARRAY(y)) t AS a",
                 "spark": "SELECT a FROM x LATERAL VIEW EXPLODE(ARRAY(y)) t AS a",
             },
@@ -781,6 +786,23 @@ class TestHive(Validator):
                 "presto": "REGEXP_EXTRACT('abc', '(a)(b)(c)', 1)",
                 "trino": "REGEXP_EXTRACT('abc', '(a)(b)(c)', 1)",
                 "duckdb": "REGEXP_EXTRACT('abc', '(a)(b)(c)', 1)",
+            },
+        )
+
+        self.validate_identity("EXISTS(col, x -> x % 2 = 0)").assert_is(exp.Exists)
+
+        self.validate_all(
+            "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+            read={
+                "hive": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+                "spark2": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+                "spark": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+                "databricks": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+            },
+            write={
+                "spark2": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+                "spark": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
+                "databricks": "SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)",
             },
         )
 

@@ -206,6 +206,11 @@ COMPLEMENT_COMPARISONS = {
     exp.NEQ: exp.EQ,
 }
 
+COMPLEMENT_SUBQUERY_PREDICATES = {
+    exp.All: exp.Any,
+    exp.Any: exp.All,
+}
+
 
 def simplify_not(expression):
     """
@@ -218,9 +223,12 @@ def simplify_not(expression):
         if is_null(this):
             return exp.null()
         if this.__class__ in COMPLEMENT_COMPARISONS:
-            return COMPLEMENT_COMPARISONS[this.__class__](
-                this=this.this, expression=this.expression
-            )
+            right = this.expression
+            complement_subquery_predicate = COMPLEMENT_SUBQUERY_PREDICATES.get(right.__class__)
+            if complement_subquery_predicate:
+                right = complement_subquery_predicate(this=right.this)
+
+            return COMPLEMENT_COMPARISONS[this.__class__](this=this.this, expression=right)
         if isinstance(this, exp.Paren):
             condition = this.unnest()
             if isinstance(condition, exp.And):
@@ -1070,7 +1078,11 @@ def sort_comparison(expression: exp.Expression) -> exp.Expression:
         l_const = _is_constant(l)
         r_const = _is_constant(r)
 
-        if (l_column and not r_column) or (r_const and not l_const):
+        if (
+            (l_column and not r_column)
+            or (r_const and not l_const)
+            or isinstance(r, exp.SubqueryPredicate)
+        ):
             return expression
         if (r_column and not l_column) or (l_const and not r_const) or (gen(l) > gen(r)):
             return INVERSE_COMPARISONS.get(expression.__class__, expression.__class__)(

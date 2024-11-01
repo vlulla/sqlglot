@@ -190,6 +190,17 @@ SELECT x._col_0 AS _col_0, x._col_1 AS _col_1 FROM (VALUES (1, 2)) AS x(_col_0, 
 SELECT SOME_UDF(data).* FROM t;
 SELECT SOME_UDF(t.data).* FROM t AS t;
 
+# execute: false
+# allow_partial_qualification: true
+# validate_qualify_columns: false
+SELECT a + 1 AS i, missing_column FROM x;
+SELECT x.a + 1 AS i, missing_column AS missing_column FROM x AS x;
+
+# execute: false
+# dialect: clickhouse
+SELECT s, arr1, arr2 FROM arrays_test LEFT ARRAY JOIN arr1, arrays_test.arr2;
+SELECT arrays_test.s AS s, arrays_test.arr1 AS arr1, arrays_test.arr2 AS arr2 FROM arrays_test AS arrays_test LEFT ARRAY JOIN arrays_test.arr1, arrays_test.arr2;
+
 --------------------------------------
 -- Derived tables
 --------------------------------------

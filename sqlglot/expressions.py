@@ -11,7 +11,6 @@ SQL expressions, such as `sqlglot.expressions.select`.
 """
 
 from __future__ import annotations
-
 import datetime
 import math
 import numbers
@@ -36,6 +35,7 @@ from sqlglot.helper import (
 from sqlglot.tokens import Token, TokenError
 
 if t.TYPE_CHECKING:
+    from typing_extensions import Self
     from sqlglot._typing import E, Lit
     from sqlglot.dialects.dialect import DialectType
 
@@ -404,9 +404,9 @@ class Expression(metaclass=_Expression):
     def iter_expressions(self, reverse: bool = False) -> t.Iterator[Expression]:
         """Yields the key and expression for all arguments, exploding list args."""
         # remove tuple when python 3.7 is deprecated
-        for vs in reversed(tuple(self.args.values())) if reverse else self.args.values():
+        for vs in reversed(tuple(self.args.values())) if reverse else self.args.values():  # type: ignore
             if type(vs) is list:
-                for v in reversed(vs) if reverse else vs:
+                for v in reversed(vs) if reverse else vs:  # type: ignore
                     if hasattr(v, "parent"):
                         yield v
             else:
@@ -1247,7 +1247,7 @@ class Query(Expression):
         )
 
     def union(
-        self, expression: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
+        self, *expressions: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
     ) -> Union:
         """
         Builds a UNION expression.
@@ -1258,8 +1258,8 @@ class Query(Expression):
             'SELECT * FROM foo UNION SELECT * FROM bla'
 
         Args:
-            expression: the SQL code string.
-                If an `Expression` instance is passed, it will be used as-is.
+            expressions: the SQL code strings.
+                If `Expression` instances are passed, they will be used as-is.
             distinct: set the DISTINCT flag if and only if this is true.
             dialect: the dialect used to parse the input expression.
             opts: other options to use to parse the input expressions.
@@ -1267,10 +1267,10 @@ class Query(Expression):
         Returns:
             The new Union expression.
         """
-        return union(left=self, right=expression, distinct=distinct, dialect=dialect, **opts)
+        return union(self, *expressions, distinct=distinct, dialect=dialect, **opts)
 
     def intersect(
-        self, expression: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
+        self, *expressions: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
     ) -> Intersect:
         """
         Builds an INTERSECT expression.
@@ -1281,8 +1281,8 @@ class Query(Expression):
             'SELECT * FROM foo INTERSECT SELECT * FROM bla'
 
         Args:
-            expression: the SQL code string.
-                If an `Expression` instance is passed, it will be used as-is.
+            expressions: the SQL code strings.
+                If `Expression` instances are passed, they will be used as-is.
             distinct: set the DISTINCT flag if and only if this is true.
             dialect: the dialect used to parse the input expression.
             opts: other options to use to parse the input expressions.
@@ -1290,10 +1290,10 @@ class Query(Expression):
         Returns:
             The new Intersect expression.
         """
-        return intersect(left=self, right=expression, distinct=distinct, dialect=dialect, **opts)
+        return intersect(self, *expressions, distinct=distinct, dialect=dialect, **opts)
 
     def except_(
-        self, expression: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
+        self, *expressions: ExpOrStr, distinct: bool = True, dialect: DialectType = None, **opts
     ) -> Except:
         """
         Builds an EXCEPT expression.
@@ -1304,8 +1304,8 @@ class Query(Expression):
             'SELECT * FROM foo EXCEPT SELECT * FROM bla'
 
         Args:
-            expression: the SQL code string.
-                If an `Expression` instance is passed, it will be used as-is.
+            expressions: the SQL code strings.
+                If `Expression` instance are passed, they will be used as-is.
             distinct: set the DISTINCT flag if and only if this is true.
             dialect: the dialect used to parse the input expression.
             opts: other options to use to parse the input expressions.
@@ -1313,7 +1313,7 @@ class Query(Expression):
         Returns:
             The new Except expression.
         """
-        return except_(left=self, right=expression, distinct=distinct, dialect=dialect, **opts)
+        return except_(self, *expressions, distinct=distinct, dialect=dialect, **opts)
 
 
 class UDTF(DerivedTable):
@@ -1368,7 +1368,7 @@ class DML(Expression):
         dialect: DialectType = None,
         copy: bool = True,
         **opts,
-    ) -> DML:
+    ) -> "Self":
         """
         Set the RETURNING expression. Not supported by all dialects.
 
@@ -1697,7 +1697,7 @@ class RenameColumn(Expression):
     arg_types = {"this": True, "to": True, "exists": False}
 
 
-class RenameTable(Expression):
+class AlterRename(Expression):
     pass
 
 
@@ -1938,6 +1938,7 @@ class Delete(DML):
         "returning": False,
         "limit": False,
         "tables": False,  # Multiple-Table Syntax (MySQL)
+        "cluster": False,  # Clickhouse
     }
 
     def delete(
@@ -2105,7 +2106,13 @@ class PrimaryKey(Expression):
 # https://www.postgresql.org/docs/9.1/sql-selectinto.html
 # https://docs.aws.amazon.com/redshift/latest/dg/r_SELECT_INTO.html#r_SELECT_INTO-examples
 class Into(Expression):
-    arg_types = {"this": True, "temporary": False, "unlogged": False}
+    arg_types = {
+        "this": False,
+        "temporary": False,
+        "unlogged": False,
+        "bulk_collect": False,
+        "expressions": False,
+    }
 
 
 class From(Expression):
@@ -2313,6 +2320,16 @@ class Fetch(Expression):
     }
 
 
+class Grant(Expression):
+    arg_types = {
+        "privileges": True,
+        "kind": False,
+        "securable": True,
+        "principals": True,
+        "grant_option": False,
+    }
+
+
 class Group(Expression):
     arg_types = {
         "expressions": False,
@@ -2383,6 +2400,7 @@ class Join(Expression):
         "global": False,
         "hint": False,
         "match_condition": False,  # Snowflake
+        "expressions": False,
     }
 
     @property
@@ -2567,6 +2585,14 @@ class Ordered(Expression):
 
 class Property(Expression):
     arg_types = {"this": True, "value": True}
+
+
+class GrantPrivilege(Expression):
+    arg_types = {"this": True, "expressions": False}
+
+
+class GrantPrincipal(Expression):
+    arg_types = {"this": True, "kind": False}
 
 
 class AllowedValuesProperty(Expression):
@@ -2970,6 +2996,10 @@ class WithSystemVersioningProperty(Property):
     }
 
 
+class WithProcedureOptions(Property):
+    arg_types = {"expressions": True}
+
+
 class Properties(Expression):
     arg_types = {"expressions": True}
 
@@ -3188,10 +3218,18 @@ class Table(Expression):
 
     def to_column(self, copy: bool = True) -> Alias | Column | Dot:
         parts = self.parts
-        col = column(*reversed(parts[0:4]), fields=parts[4:], copy=copy)  # type: ignore
+        last_part = parts[-1]
+
+        if isinstance(last_part, Identifier):
+            col = column(*reversed(parts[0:4]), fields=parts[4:], copy=copy)  # type: ignore
+        else:
+            # This branch will be reached if a function or array is wrapped in a `Table`
+            col = last_part
+
         alias = self.args.get("alias")
         if alias:
             col = alias_(col, alias.this, copy=copy)
+
         return col
 
 
@@ -3253,7 +3291,7 @@ class Intersect(SetOperation):
     pass
 
 
-class Update(Expression):
+class Update(DML):
     arg_types = {
         "with": False,
         "this": False,
@@ -3264,6 +3302,200 @@ class Update(Expression):
         "order": False,
         "limit": False,
     }
+
+    def table(
+        self, expression: ExpOrStr, dialect: DialectType = None, copy: bool = True, **opts
+    ) -> Update:
+        """
+        Set the table to update.
+
+        Example:
+            >>> Update().table("my_table").set_("x = 1").sql()
+            'UPDATE my_table SET x = 1'
+
+        Args:
+            expression : the SQL code strings to parse.
+                If a `Table` instance is passed, this is used as-is.
+                If another `Expression` instance is passed, it will be wrapped in a `Table`.
+            dialect: the dialect used to parse the input expression.
+            copy: if `False`, modify this expression instance in-place.
+            opts: other options to use to parse the input expressions.
+
+        Returns:
+            The modified Update expression.
+        """
+        return _apply_builder(
+            expression=expression,
+            instance=self,
+            arg="this",
+            into=Table,
+            prefix=None,
+            dialect=dialect,
+            copy=copy,
+            **opts,
+        )
+
+    def set_(
+        self,
+        *expressions: ExpOrStr,
+        append: bool = True,
+        dialect: DialectType = None,
+        copy: bool = True,
+        **opts,
+    ) -> Update:
+        """
+        Append to or set the SET expressions.
+
+        Example:
+            >>> Update().table("my_table").set_("x = 1").sql()
+            'UPDATE my_table SET x = 1'
+
+        Args:
+            *expressions: the SQL code strings to parse.
+                If `Expression` instance(s) are passed, they will be used as-is.
+                Multiple expressions are combined with a comma.
+            append: if `True`, add the new expressions to any existing SET expressions.
+                Otherwise, this resets the expressions.
+            dialect: the dialect used to parse the input expressions.
+            copy: if `False`, modify this expression instance in-place.
+            opts: other options to use to parse the input expressions.
+        """
+        return _apply_list_builder(
+            *expressions,
+            instance=self,
+            arg="expressions",
+            append=append,
+            into=Expression,
+            prefix=None,
+            dialect=dialect,
+            copy=copy,
+            **opts,
+        )
+
+    def where(
+        self,
+        *expressions: t.Optional[ExpOrStr],
+        append: bool = True,
+        dialect: DialectType = None,
+        copy: bool = True,
+        **opts,
+    ) -> Select:
+        """
+        Append to or set the WHERE expressions.
+
+        Example:
+            >>> Update().table("tbl").set_("x = 1").where("x = 'a' OR x < 'b'").sql()
+            "UPDATE tbl SET x = 1 WHERE x = 'a' OR x < 'b'"
+
+        Args:
+            *expressions: the SQL code strings to parse.
+                If an `Expression` instance is passed, it will be used as-is.
+                Multiple expressions are combined with an AND operator.
+            append: if `True`, AND the new expressions to any existing expression.
+                Otherwise, this resets the expression.
+            dialect: the dialect used to parse the input expressions.
+            copy: if `False`, modify this expression instance in-place.
+            opts: other options to use to parse the input expressions.
+
+        Returns:
+            Select: the modified expression.
+        """
+        return _apply_conjunction_builder(
+            *expressions,
+            instance=self,
+            arg="where",
+            append=append,
+            into=Where,
+            dialect=dialect,
+            copy=copy,
+            **opts,
+        )
+
+    def from_(
+        self,
+        expression: t.Optional[ExpOrStr] = None,
+        dialect: DialectType = None,
+        copy: bool = True,
+        **opts,
+    ) -> Update:
+        """
+        Set the FROM expression.
+
+        Example:
+            >>> Update().table("my_table").set_("x = 1").from_("baz").sql()
+            'UPDATE my_table SET x = 1 FROM baz'
+
+        Args:
+            expression : the SQL code strings to parse.
+                If a `From` instance is passed, this is used as-is.
+                If another `Expression` instance is passed, it will be wrapped in a `From`.
+                If nothing is passed in then a from is not applied to the expression
+            dialect: the dialect used to parse the input expression.
+            copy: if `False`, modify this expression instance in-place.
+            opts: other options to use to parse the input expressions.
+
+        Returns:
+            The modified Update expression.
+        """
+        if not expression:
+            return maybe_copy(self, copy)
+
+        return _apply_builder(
+            expression=expression,
+            instance=self,
+            arg="from",
+            into=From,
+            prefix="FROM",
+            dialect=dialect,
+            copy=copy,
+            **opts,
+        )
+
+    def with_(
+        self,
+        alias: ExpOrStr,
+        as_: ExpOrStr,
+        recursive: t.Optional[bool] = None,
+        materialized: t.Optional[bool] = None,
+        append: bool = True,
+        dialect: DialectType = None,
+        copy: bool = True,
+        **opts,
+    ) -> Update:
+        """
+        Append to or set the common table expressions.
+
+        Example:
+            >>> Update().table("my_table").set_("x = 1").from_("baz").with_("baz", "SELECT id FROM foo").sql()
+            'WITH baz AS (SELECT id FROM foo) UPDATE my_table SET x = 1 FROM baz'
+
+        Args:
+            alias: the SQL code string to parse as the table name.
+                If an `Expression` instance is passed, this is used as-is.
+            as_: the SQL code string to parse as the table expression.
+                If an `Expression` instance is passed, it will be used as-is.
+            recursive: set the RECURSIVE part of the expression. Defaults to `False`.
+            materialized: set the MATERIALIZED part of the expression.
+            append: if `True`, add to any existing expressions.
+                Otherwise, this resets the expressions.
+            dialect: the dialect used to parse the input expression.
+            copy: if `False`, modify this expression instance in-place.
+            opts: other options to use to parse the input expressions.
+
+        Returns:
+            The modified expression.
+        """
+        return _apply_cte_builder(
+            self,
+            alias,
+            as_,
+            recursive=recursive,
+            materialized=materialized,
+            append=append,
+            dialect=dialect,
+            copy=copy,
+            **opts,
+        )
 
 
 class Values(UDTF):
@@ -3307,6 +3539,7 @@ class Select(Query):
         "distinct": False,
         "into": False,
         "from": False,
+        "operation_modifiers": False,
         **QUERY_MODIFIERS,
     }
 
@@ -4079,6 +4312,7 @@ class DataType(Expression):
         DECIMAL32 = auto()
         DECIMAL64 = auto()
         DECIMAL128 = auto()
+        DECIMAL256 = auto()
         DOUBLE = auto()
         ENUM = auto()
         ENUM8 = auto()
@@ -4087,6 +4321,12 @@ class DataType(Expression):
         FLOAT = auto()
         GEOGRAPHY = auto()
         GEOMETRY = auto()
+        POINT = auto()
+        RING = auto()
+        LINESTRING = auto()
+        MULTILINESTRING = auto()
+        POLYGON = auto()
+        MULTIPOLYGON = auto()
         HLLSKETCH = auto()
         HSTORE = auto()
         IMAGE = auto()
@@ -4118,11 +4358,11 @@ class DataType(Expression):
         NCHAR = auto()
         NESTED = auto()
         NULL = auto()
-        NULLABLE = auto()
         NUMMULTIRANGE = auto()
         NUMRANGE = auto()
         NVARCHAR = auto()
         OBJECT = auto()
+        RANGE = auto()
         ROWVERSION = auto()
         SERIAL = auto()
         SET = auto()
@@ -4154,6 +4394,7 @@ class DataType(Expression):
         UINT256 = auto()
         UMEDIUMINT = auto()
         UDECIMAL = auto()
+        UNION = auto()
         UNIQUEIDENTIFIER = auto()
         UNKNOWN = auto()  # Sentinel value, useful for type annotation
         USERDEFINED = "USER-DEFINED"
@@ -4172,11 +4413,17 @@ class DataType(Expression):
         Type.NESTED,
         Type.OBJECT,
         Type.STRUCT,
+        Type.UNION,
+    }
+
+    ARRAY_TYPES = {
+        Type.ARRAY,
+        Type.LIST,
     }
 
     NESTED_TYPES = {
         *STRUCT_TYPES,
-        Type.ARRAY,
+        *ARRAY_TYPES,
         Type.MAP,
     }
 
@@ -4227,6 +4474,7 @@ class DataType(Expression):
         Type.DECIMAL32,
         Type.DECIMAL64,
         Type.DECIMAL128,
+        Type.DECIMAL256,
         Type.MONEY,
         Type.SMALLMONEY,
         Type.UDECIMAL,
@@ -4312,32 +4560,19 @@ class DataType(Expression):
         Returns:
             True, if and only if there is a type in `dtypes` which is equal to this DataType.
         """
-        if (
-            not check_nullable
-            and self.this == DataType.Type.NULLABLE
-            and len(self.expressions) == 1
-        ):
-            this_type = self.expressions[0]
-        else:
-            this_type = self
-
+        self_is_nullable = self.args.get("nullable")
         for dtype in dtypes:
             other_type = DataType.build(dtype, copy=False, udt=True)
-            if (
-                not check_nullable
-                and other_type.this == DataType.Type.NULLABLE
-                and len(other_type.expressions) == 1
-            ):
-                other_type = other_type.expressions[0]
-
+            other_is_nullable = other_type.args.get("nullable")
             if (
                 other_type.expressions
-                or this_type.this == DataType.Type.USERDEFINED
+                or (check_nullable and (self_is_nullable or other_is_nullable))
+                or self.this == DataType.Type.USERDEFINED
                 or other_type.this == DataType.Type.USERDEFINED
             ):
-                matches = this_type == other_type
+                matches = self == other_type
             else:
-                matches = this_type.this == other_type.this
+                matches = self.this == other_type.this
 
             if matches:
                 return True
@@ -4370,10 +4605,6 @@ class Any(SubqueryPredicate):
     pass
 
 
-class Exists(SubqueryPredicate):
-    pass
-
-
 # Commands to interact with the databases or engines. For most of the command
 # expressions we parse whatever comes after the command's name as a string.
 class Command(Expression):
@@ -4403,6 +4634,15 @@ class Alter(Expression):
         "cluster": False,
         "not_valid": False,
     }
+
+    @property
+    def kind(self) -> t.Optional[str]:
+        kind = self.args.get("kind")
+        return kind and kind.upper()
+
+    @property
+    def actions(self) -> t.List[Expression]:
+        return self.args.get("actions") or []
 
 
 class AddConstraint(Expression):
@@ -4766,12 +5006,12 @@ class TimeUnit(Expression):
 
 
 class IntervalOp(TimeUnit):
-    arg_types = {"unit": True, "expression": True}
+    arg_types = {"unit": False, "expression": True}
 
     def interval(self):
         return Interval(
             this=self.expression.copy(),
-            unit=self.unit.copy(),
+            unit=self.unit.copy() if self.unit else None,
         )
 
 
@@ -4919,6 +5159,10 @@ class ApproxDistinct(AggFunc):
     _sql_names = ["APPROX_DISTINCT", "APPROX_COUNT_DISTINCT"]
 
 
+class Apply(Func):
+    arg_types = {"this": True, "expression": True}
+
+
 class Array(Func):
     arg_types = {"expressions": False, "bracket_notation": False}
     is_var_len_args = True
@@ -4956,6 +5200,18 @@ class ToNumber(Func):
         "precision": False,
         "scale": False,
     }
+
+
+# https://docs.snowflake.com/en/sql-reference/functions/to_double
+class ToDouble(Func):
+    arg_types = {
+        "this": True,
+        "format": False,
+    }
+
+
+class Columns(Func):
+    arg_types = {"this": True, "unpack": False}
 
 
 # https://learn.microsoft.com/en-us/sql/t-sql/functions/cast-and-convert-transact-sql?view=sql-server-ver16#syntax
@@ -5022,6 +5278,11 @@ class ArrayFilter(Func):
 class ArrayToString(Func):
     arg_types = {"this": True, "expression": True, "null": False}
     _sql_names = ["ARRAY_TO_STRING", "ARRAY_JOIN"]
+
+
+# https://cloud.google.com/bigquery/docs/reference/standard-sql/timestamp_functions#string
+class String(Func):
+    arg_types = {"this": True, "zone": False}
 
 
 class StringToArray(Func):
@@ -5172,7 +5433,7 @@ class Coalesce(Func):
 
 
 class Chr(Func):
-    arg_types = {"this": True, "charset": False, "expressions": False}
+    arg_types = {"expressions": True, "charset": False}
     is_var_len_args = True
     _sql_names = ["CHR", "CHAR"]
 
@@ -5242,11 +5503,17 @@ class DateTrunc(Func):
     arg_types = {"unit": True, "this": True, "zone": False}
 
     def __init__(self, **args):
+        # Across most dialects it's safe to unabbreviate the unit (e.g. 'Q' -> 'QUARTER') except Oracle
+        # https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/ROUND-and-TRUNC-Date-Functions.html
+        unabbreviate = args.pop("unabbreviate", True)
+
         unit = args.get("unit")
         if isinstance(unit, TimeUnit.VAR_LIKE):
-            args["unit"] = Literal.string(
-                (TimeUnit.UNABBREVIATED_UNIT_NAME.get(unit.name) or unit.name).upper()
-            )
+            unit_name = unit.name.upper()
+            if unabbreviate and unit_name in TimeUnit.UNABBREVIATED_UNIT_NAME:
+                unit_name = TimeUnit.UNABBREVIATED_UNIT_NAME[unit_name]
+
+            args["unit"] = Literal.string(unit_name)
         elif isinstance(unit, Week):
             unit.set("this", Literal.string(unit.this.name.upper()))
 
@@ -5316,6 +5583,10 @@ class LastDay(Func, TimeUnit):
 
 class Extract(Func):
     arg_types = {"this": True, "expression": True}
+
+
+class Exists(Func, SubqueryPredicate):
+    arg_types = {"this": True, "expression": False}
 
 
 class Timestamp(Func):
@@ -5411,7 +5682,7 @@ class Exp(Func):
 
 
 # https://docs.snowflake.com/en/sql-reference/functions/flatten
-class Explode(Func):
+class Explode(Func, UDTF):
     arg_types = {"this": True, "expressions": False}
     is_var_len_args = True
 
@@ -5537,7 +5808,7 @@ class JSON(Expression):
 
 
 class JSONPath(Expression):
-    arg_types = {"expressions": True}
+    arg_types = {"expressions": True, "escape": False}
 
     @property
     def output_name(self) -> str:
@@ -5695,6 +5966,11 @@ class JSONBContains(Binary, Func):
     _sql_names = ["JSONB_CONTAINS"]
 
 
+class JSONBExists(Func):
+    arg_types = {"this": True, "path": True}
+    _sql_names = ["JSONB_EXISTS"]
+
+
 class JSONExtract(Binary, Func):
     arg_types = {
         "this": True,
@@ -5702,6 +5978,8 @@ class JSONExtract(Binary, Func):
         "only_json_types": False,
         "expressions": False,
         "variant_extract": False,
+        "json_query": False,
+        "option": False,
     }
     _sql_names = ["JSON_EXTRACT"]
     is_var_len_args = True
@@ -5771,6 +6049,7 @@ class Levenshtein(Func):
         "ins_cost": False,
         "del_cost": False,
         "sub_cost": False,
+        "max_dist": False,
     }
 
 
@@ -5862,6 +6141,10 @@ class MD5Digest(Func):
     _sql_names = ["MD5_DIGEST"]
 
 
+class Median(AggFunc):
+    pass
+
+
 class Min(AggFunc):
     arg_types = {"this": True, "expressions": False}
     is_var_len_args = True
@@ -5881,6 +6164,10 @@ class Nvl2(Func):
 
 class Normalize(Func):
     arg_types = {"this": True, "form": False}
+
+
+class Overlay(Func):
+    arg_types = {"this": True, "expression": True, "from": True, "for": False}
 
 
 # https://cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-predict#mlpredict_function
@@ -6012,9 +6299,15 @@ class Split(Func):
     arg_types = {"this": True, "expression": True, "limit": False}
 
 
+# https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.functions.split_part.html
+class SplitPart(Func):
+    arg_types = {"this": True, "delimiter": True, "part_index": True}
+
+
 # Start may be omitted in the case of postgres
 # https://www.postgresql.org/docs/9.1/functions-string.html @ Table 9-6
 class Substring(Func):
+    _sql_names = ["SUBSTRING", "SUBSTR"]
     arg_types = {"this": True, "start": False, "length": False}
 
 
@@ -6217,6 +6510,12 @@ class UnixToTimeStr(Func):
     pass
 
 
+class Uuid(Func):
+    _sql_names = ["UUID", "GEN_RANDOM_UUID", "GENERATE_UUID", "UUID_STRING"]
+
+    arg_types = {"this": False, "name": False}
+
+
 class TimestampFromParts(Func):
     _sql_names = ["TIMESTAMP_FROM_PARTS", "TIMESTAMPFROMPARTS"]
     arg_types = {
@@ -6272,13 +6571,14 @@ class Use(Expression):
     arg_types = {"this": True, "kind": False}
 
 
-class Merge(Expression):
+class Merge(DML):
     arg_types = {
         "this": True,
         "using": True,
         "on": True,
         "expressions": True,
         "with": False,
+        "returning": False,
     }
 
 
@@ -6613,26 +6913,37 @@ def _wrap(expression: E, kind: t.Type[Expression]) -> E | Paren:
     return Paren(this=expression) if isinstance(expression, kind) else expression
 
 
+def _apply_set_operation(
+    *expressions: ExpOrStr,
+    set_operation: t.Type[S],
+    distinct: bool = True,
+    dialect: DialectType = None,
+    copy: bool = True,
+    **opts,
+) -> S:
+    return reduce(
+        lambda x, y: set_operation(this=x, expression=y, distinct=distinct),
+        (maybe_parse(e, dialect=dialect, copy=copy, **opts) for e in expressions),
+    )
+
+
 def union(
-    left: ExpOrStr,
-    right: ExpOrStr,
+    *expressions: ExpOrStr,
     distinct: bool = True,
     dialect: DialectType = None,
     copy: bool = True,
     **opts,
 ) -> Union:
     """
-    Initializes a syntax tree from one UNION expression.
+    Initializes a syntax tree for the `UNION` operation.
 
     Example:
         >>> union("SELECT * FROM foo", "SELECT * FROM bla").sql()
         'SELECT * FROM foo UNION SELECT * FROM bla'
 
     Args:
-        left: the SQL code string corresponding to the left-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
-        right: the SQL code string corresponding to the right-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
+        expressions: the SQL code strings, corresponding to the `UNION`'s operands.
+            If `Expression` instances are passed, they will be used as-is.
         distinct: set the DISTINCT flag if and only if this is true.
         dialect: the dialect used to parse the input expression.
         copy: whether to copy the expression.
@@ -6641,32 +6952,29 @@ def union(
     Returns:
         The new Union instance.
     """
-    left = maybe_parse(sql_or_expression=left, dialect=dialect, copy=copy, **opts)
-    right = maybe_parse(sql_or_expression=right, dialect=dialect, copy=copy, **opts)
-
-    return Union(this=left, expression=right, distinct=distinct)
+    assert len(expressions) >= 2, "At least two expressions are required by `union`."
+    return _apply_set_operation(
+        *expressions, set_operation=Union, distinct=distinct, dialect=dialect, copy=copy, **opts
+    )
 
 
 def intersect(
-    left: ExpOrStr,
-    right: ExpOrStr,
+    *expressions: ExpOrStr,
     distinct: bool = True,
     dialect: DialectType = None,
     copy: bool = True,
     **opts,
 ) -> Intersect:
     """
-    Initializes a syntax tree from one INTERSECT expression.
+    Initializes a syntax tree for the `INTERSECT` operation.
 
     Example:
         >>> intersect("SELECT * FROM foo", "SELECT * FROM bla").sql()
         'SELECT * FROM foo INTERSECT SELECT * FROM bla'
 
     Args:
-        left: the SQL code string corresponding to the left-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
-        right: the SQL code string corresponding to the right-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
+        expressions: the SQL code strings, corresponding to the `INTERSECT`'s operands.
+            If `Expression` instances are passed, they will be used as-is.
         distinct: set the DISTINCT flag if and only if this is true.
         dialect: the dialect used to parse the input expression.
         copy: whether to copy the expression.
@@ -6675,32 +6983,29 @@ def intersect(
     Returns:
         The new Intersect instance.
     """
-    left = maybe_parse(sql_or_expression=left, dialect=dialect, copy=copy, **opts)
-    right = maybe_parse(sql_or_expression=right, dialect=dialect, copy=copy, **opts)
-
-    return Intersect(this=left, expression=right, distinct=distinct)
+    assert len(expressions) >= 2, "At least two expressions are required by `intersect`."
+    return _apply_set_operation(
+        *expressions, set_operation=Intersect, distinct=distinct, dialect=dialect, copy=copy, **opts
+    )
 
 
 def except_(
-    left: ExpOrStr,
-    right: ExpOrStr,
+    *expressions: ExpOrStr,
     distinct: bool = True,
     dialect: DialectType = None,
     copy: bool = True,
     **opts,
 ) -> Except:
     """
-    Initializes a syntax tree from one EXCEPT expression.
+    Initializes a syntax tree for the `EXCEPT` operation.
 
     Example:
         >>> except_("SELECT * FROM foo", "SELECT * FROM bla").sql()
         'SELECT * FROM foo EXCEPT SELECT * FROM bla'
 
     Args:
-        left: the SQL code string corresponding to the left-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
-        right: the SQL code string corresponding to the right-hand side.
-            If an `Expression` instance is passed, it will be used as-is.
+        expressions: the SQL code strings, corresponding to the `EXCEPT`'s operands.
+            If `Expression` instances are passed, they will be used as-is.
         distinct: set the DISTINCT flag if and only if this is true.
         dialect: the dialect used to parse the input expression.
         copy: whether to copy the expression.
@@ -6709,10 +7014,10 @@ def except_(
     Returns:
         The new Except instance.
     """
-    left = maybe_parse(sql_or_expression=left, dialect=dialect, copy=copy, **opts)
-    right = maybe_parse(sql_or_expression=right, dialect=dialect, copy=copy, **opts)
-
-    return Except(this=left, expression=right, distinct=distinct)
+    assert len(expressions) >= 2, "At least two expressions are required by `except_`."
+    return _apply_set_operation(
+        *expressions, set_operation=Except, distinct=distinct, dialect=dialect, copy=copy, **opts
+    )
 
 
 def select(*expressions: ExpOrStr, dialect: DialectType = None, **opts) -> Select:
@@ -6761,9 +7066,10 @@ def from_(expression: ExpOrStr, dialect: DialectType = None, **opts) -> Select:
 
 def update(
     table: str | Table,
-    properties: dict,
+    properties: t.Optional[dict] = None,
     where: t.Optional[ExpOrStr] = None,
     from_: t.Optional[ExpOrStr] = None,
+    with_: t.Optional[t.Dict[str, ExpOrStr]] = None,
     dialect: DialectType = None,
     **opts,
 ) -> Update:
@@ -6771,14 +7077,15 @@ def update(
     Creates an update statement.
 
     Example:
-        >>> update("my_table", {"x": 1, "y": "2", "z": None}, from_="baz", where="id > 1").sql()
-        "UPDATE my_table SET x = 1, y = '2', z = NULL FROM baz WHERE id > 1"
+        >>> update("my_table", {"x": 1, "y": "2", "z": None}, from_="baz_cte", where="baz_cte.id > 1 and my_table.id = baz_cte.id", with_={"baz_cte": "SELECT id FROM foo"}).sql()
+        "WITH baz_cte AS (SELECT id FROM foo) UPDATE my_table SET x = 1, y = '2', z = NULL FROM baz_cte WHERE baz_cte.id > 1 AND my_table.id = baz_cte.id"
 
     Args:
-        *properties: dictionary of properties to set which are
+        properties: dictionary of properties to SET which are
             auto converted to sql objects eg None -> NULL
         where: sql conditional parsed into a WHERE statement
         from_: sql statement parsed into a FROM statement
+        with_: dictionary of CTE aliases / select statements to include in a WITH clause.
         dialect: the dialect used to parse the input expressions.
         **opts: other options to use to parse the input expressions.
 
@@ -6786,13 +7093,14 @@ def update(
         Update: the syntax tree for the UPDATE statement.
     """
     update_expr = Update(this=maybe_parse(table, into=Table, dialect=dialect))
-    update_expr.set(
-        "expressions",
-        [
-            EQ(this=maybe_parse(k, dialect=dialect, **opts), expression=convert(v))
-            for k, v in properties.items()
-        ],
-    )
+    if properties:
+        update_expr.set(
+            "expressions",
+            [
+                EQ(this=maybe_parse(k, dialect=dialect, **opts), expression=convert(v))
+                for k, v in properties.items()
+            ],
+        )
     if from_:
         update_expr.set(
             "from",
@@ -6804,6 +7112,15 @@ def update(
         update_expr.set(
             "where",
             maybe_parse(where, into=Where, dialect=dialect, prefix="WHERE", **opts),
+        )
+    if with_:
+        cte_list = [
+            alias_(CTE(this=maybe_parse(qry, dialect=dialect, **opts)), alias, table=True)
+            for alias, qry in with_.items()
+        ]
+        update_expr.set(
+            "with",
+            With(expressions=cte_list),
         )
     return update_expr
 
@@ -6835,9 +7152,7 @@ def delete(
     if where:
         delete_expr = delete_expr.where(where, dialect=dialect, copy=False, **opts)
     if returning:
-        delete_expr = t.cast(
-            Delete, delete_expr.returning(returning, dialect=dialect, copy=False, **opts)
-        )
+        delete_expr = delete_expr.returning(returning, dialect=dialect, copy=False, **opts)
     return delete_expr
 
 
@@ -6880,9 +7195,58 @@ def insert(
     insert = Insert(this=this, expression=expr, overwrite=overwrite)
 
     if returning:
-        insert = t.cast(Insert, insert.returning(returning, dialect=dialect, copy=False, **opts))
+        insert = insert.returning(returning, dialect=dialect, copy=False, **opts)
 
     return insert
+
+
+def merge(
+    *when_exprs: ExpOrStr,
+    into: ExpOrStr,
+    using: ExpOrStr,
+    on: ExpOrStr,
+    returning: t.Optional[ExpOrStr] = None,
+    dialect: DialectType = None,
+    copy: bool = True,
+    **opts,
+) -> Merge:
+    """
+    Builds a MERGE statement.
+
+    Example:
+        >>> merge("WHEN MATCHED THEN UPDATE SET col1 = source_table.col1",
+        ...       "WHEN NOT MATCHED THEN INSERT (col1) VALUES (source_table.col1)",
+        ...       into="my_table",
+        ...       using="source_table",
+        ...       on="my_table.id = source_table.id").sql()
+        'MERGE INTO my_table USING source_table ON my_table.id = source_table.id WHEN MATCHED THEN UPDATE SET col1 = source_table.col1 WHEN NOT MATCHED THEN INSERT (col1) VALUES (source_table.col1)'
+
+    Args:
+        *when_exprs: The WHEN clauses specifying actions for matched and unmatched rows.
+        into: The target table to merge data into.
+        using: The source table to merge data from.
+        on: The join condition for the merge.
+        returning: The columns to return from the merge.
+        dialect: The dialect used to parse the input expressions.
+        copy: Whether to copy the expression.
+        **opts: Other options to use to parse the input expressions.
+
+    Returns:
+        Merge: The syntax tree for the MERGE statement.
+    """
+    merge = Merge(
+        this=maybe_parse(into, dialect=dialect, copy=copy, **opts),
+        using=maybe_parse(using, dialect=dialect, copy=copy, **opts),
+        on=maybe_parse(on, dialect=dialect, copy=copy, **opts),
+        expressions=[
+            maybe_parse(when_expr, dialect=dialect, copy=copy, into=When, **opts)
+            for when_expr in when_exprs
+        ],
+    )
+    if returning:
+        merge = merge.returning(returning, dialect=dialect, copy=False, **opts)
+
+    return merge
 
 
 def condition(
@@ -7107,15 +7471,9 @@ def to_interval(interval: str | Literal) -> Interval:
 
         interval = interval.this
 
-    interval_parts = INTERVAL_STRING_RE.match(interval)  # type: ignore
-
-    if not interval_parts:
-        raise ValueError("Invalid interval string.")
-
-    return Interval(
-        this=Literal.string(interval_parts.group(1)),
-        unit=Var(this=interval_parts.group(2).upper()),
-    )
+    interval = maybe_parse(f"INTERVAL {interval}")
+    assert isinstance(interval, Interval)
+    return interval
 
 
 def to_table(
@@ -7492,7 +7850,7 @@ def rename_table(
         this=old_table,
         kind="TABLE",
         actions=[
-            RenameTable(this=new_table),
+            AlterRename(this=new_table),
         ],
     )
 

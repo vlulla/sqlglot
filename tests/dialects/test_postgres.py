@@ -354,10 +354,10 @@ class TestPostgres(Validator):
         self.validate_all(
             "SELECT ARRAY[1, 2, 3] @> ARRAY[1, 2]",
             read={
-                "duckdb": "SELECT ARRAY_HAS_ALL([1, 2, 3], [1, 2])",
+                "duckdb": "SELECT [1, 2, 3] @> [1, 2]",
             },
             write={
-                "duckdb": "SELECT ARRAY_HAS_ALL([1, 2, 3], [1, 2])",
+                "duckdb": "SELECT [1, 2, 3] @> [1, 2]",
                 "mysql": UnsupportedError,
                 "postgres": "SELECT ARRAY[1, 2, 3] @> ARRAY[1, 2]",
             },
@@ -396,13 +396,6 @@ class TestPostgres(Validator):
             write={
                 "duckdb": """SELECT (data ->> '$."en-US"') AS acat FROM my_table""",
                 "postgres": "SELECT (data ->> 'en-US') AS acat FROM my_table",
-            },
-        )
-        self.validate_all(
-            "SELECT ARRAY[1, 2, 3] && ARRAY[1, 2]",
-            write={
-                "": "SELECT ARRAY_OVERLAPS(ARRAY(1, 2, 3), ARRAY(1, 2))",
-                "postgres": "SELECT ARRAY[1, 2, 3] && ARRAY[1, 2]",
             },
         )
         self.validate_all(
@@ -794,6 +787,33 @@ class TestPostgres(Validator):
         self.validate_identity(
             'SELECT js, js IS JSON ARRAY WITH UNIQUE KEYS AS "array w. UK?", js IS JSON ARRAY WITHOUT UNIQUE KEYS AS "array w/o UK?", js IS JSON ARRAY UNIQUE KEYS AS "array w UK 2?" FROM t'
         )
+        self.validate_identity(
+            "MERGE INTO target_table USING source_table AS source ON target.id = source.id WHEN MATCHED THEN DO NOTHING WHEN NOT MATCHED THEN DO NOTHING RETURNING MERGE_ACTION(), *"
+        )
+        self.validate_identity(
+            "SELECT 1 FROM ((VALUES (1)) AS vals(id) LEFT OUTER JOIN tbl ON vals.id = tbl.id)"
+        )
+        self.validate_identity("SELECT OVERLAY(a PLACING b FROM 1)")
+        self.validate_identity("SELECT OVERLAY(a PLACING b FROM 1 FOR 1)")
+        self.validate_identity("ARRAY[1, 2, 3] && ARRAY[1, 2]").assert_is(exp.ArrayOverlaps)
+
+        self.validate_all(
+            """SELECT JSONB_EXISTS('{"a": [1,2,3]}', 'a')""",
+            write={
+                "postgres": """SELECT JSONB_EXISTS('{"a": [1,2,3]}', 'a')""",
+                "duckdb": """SELECT JSON_EXISTS('{"a": [1,2,3]}', '$.a')""",
+            },
+        )
+        self.validate_all(
+            "WITH t AS (SELECT ARRAY[1, 2, 3] AS col) SELECT * FROM t WHERE 1 <= ANY(col) AND 2 = ANY(col)",
+            write={
+                "postgres": "WITH t AS (SELECT ARRAY[1, 2, 3] AS col) SELECT * FROM t WHERE 1 <= ANY(col) AND 2 = ANY(col)",
+                "hive": "WITH t AS (SELECT ARRAY(1, 2, 3) AS col) SELECT * FROM t WHERE EXISTS(col, x -> 1 <= x) AND EXISTS(col, x -> 2 = x)",
+                "spark2": "WITH t AS (SELECT ARRAY(1, 2, 3) AS col) SELECT * FROM t WHERE EXISTS(col, x -> 1 <= x) AND EXISTS(col, x -> 2 = x)",
+                "spark": "WITH t AS (SELECT ARRAY(1, 2, 3) AS col) SELECT * FROM t WHERE EXISTS(col, x -> 1 <= x) AND EXISTS(col, x -> 2 = x)",
+                "databricks": "WITH t AS (SELECT ARRAY(1, 2, 3) AS col) SELECT * FROM t WHERE EXISTS(col, x -> 1 <= x) AND EXISTS(col, x -> 2 = x)",
+            },
+        )
 
     def test_ddl(self):
         # Checks that user-defined types are parsed into DataType instead of Identifier
@@ -811,6 +831,7 @@ class TestPostgres(Validator):
         cdef.args["kind"].assert_is(exp.DataType)
         self.assertEqual(expr.sql(dialect="postgres"), "CREATE TABLE t (x INTERVAL DAY)")
 
+        self.validate_identity('ALTER INDEX "IX_Ratings_Column1" RENAME TO "IX_Ratings_Column2"')
         self.validate_identity('CREATE TABLE x (a TEXT COLLATE "de_DE")')
         self.validate_identity('CREATE TABLE x (a TEXT COLLATE pg_catalog."default")')
         self.validate_identity("CREATE TABLE t (col INT[3][5])")

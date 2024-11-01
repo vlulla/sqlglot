@@ -2,7 +2,6 @@ from unittest import mock
 
 from sqlglot import exp, parse_one
 from sqlglot.dialects.dialect import Dialects
-from sqlglot.helper import logger as helper_logger
 from tests.dialects.test_dialect import Validator
 
 
@@ -294,25 +293,39 @@ TBLPROPERTIES (
             "SELECT STR_TO_MAP('a:1,b:2,c:3')",
             "SELECT STR_TO_MAP('a:1,b:2,c:3', ',', ':')",
         )
-
-        with self.assertLogs(helper_logger):
-            self.validate_all(
-                "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
-                read={
-                    "databricks": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
-                },
-                write={
-                    "databricks": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
-                    "duckdb": "SELECT ([1, 2, 3])[3]",
-                    "spark": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
-                },
-            )
+        self.validate_all(
+            "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
+            read={
+                "databricks": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
+                "presto": "SELECT ELEMENT_AT(ARRAY[1, 2, 3], 2)",
+            },
+            write={
+                "databricks": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
+                "spark": "SELECT TRY_ELEMENT_AT(ARRAY(1, 2, 3), 2)",
+                "duckdb": "SELECT ([1, 2, 3])[2]",
+                "presto": "SELECT ELEMENT_AT(ARRAY[1, 2, 3], 2)",
+            },
+        )
 
         self.validate_all(
             "SELECT ARRAY_AGG(x) FILTER (WHERE x = 5) FROM (SELECT 1 UNION ALL SELECT NULL) AS t(x)",
             write={
                 "duckdb": "SELECT ARRAY_AGG(x) FILTER(WHERE x = 5 AND NOT x IS NULL) FROM (SELECT 1 UNION ALL SELECT NULL) AS t(x)",
                 "spark": "SELECT COLLECT_LIST(x) FILTER(WHERE x = 5) FROM (SELECT 1 UNION ALL SELECT NULL) AS t(x)",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_AGG(1)",
+            write={
+                "duckdb": "SELECT ARRAY_AGG(1)",
+                "spark": "SELECT COLLECT_LIST(1)",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_AGG(DISTINCT STRUCT('a'))",
+            write={
+                "duckdb": "SELECT ARRAY_AGG(DISTINCT {'col1': 'a'})",
+                "spark": "SELECT COLLECT_LIST(DISTINCT STRUCT('a' AS col1))",
             },
         )
         self.validate_all(
@@ -876,3 +889,9 @@ TBLPROPERTIES (
                 "databricks": "SELECT * FROM db.table1 EXCEPT SELECT * FROM db.table2",
             },
         )
+
+    def test_string(self):
+        for dialect in ("hive", "spark2", "spark", "databricks"):
+            with self.subTest(f"Testing STRING() for {dialect}"):
+                query = parse_one("STRING(a)", dialect=dialect)
+                self.assertEqual(query.sql(dialect), "CAST(a AS STRING)")

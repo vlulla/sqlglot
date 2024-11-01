@@ -107,10 +107,10 @@ WHERE
             "SELECT * FROM quarterly_sales PIVOT(SUM(amount) FOR quarter IN (SELECT DISTINCT quarter FROM ad_campaign_types_by_quarter WHERE television = TRUE ORDER BY quarter)) ORDER BY empid"
         )
         self.validate_identity(
-            "SELECT * FROM quarterly_sales PIVOT(SUM(amount) FOR IN (ANY ORDER BY quarter)) ORDER BY empid"
+            "SELECT * FROM quarterly_sales PIVOT(SUM(amount) FOR quarter IN (ANY ORDER BY quarter)) ORDER BY empid"
         )
         self.validate_identity(
-            "SELECT * FROM quarterly_sales PIVOT(SUM(amount) FOR IN (ANY)) ORDER BY empid"
+            "SELECT * FROM quarterly_sales PIVOT(SUM(amount) FOR quarter IN (ANY)) ORDER BY empid"
         )
         self.validate_identity(
             "MERGE INTO my_db AS ids USING (SELECT new_id FROM my_model WHERE NOT col IS NULL) AS new_ids ON ids.type = new_ids.type AND ids.source = new_ids.source WHEN NOT MATCHED THEN INSERT VALUES (new_ids.new_id)"
@@ -331,10 +331,15 @@ WHERE
                 "snowflake": "SELECT TIME_FROM_PARTS(12, 34, 56, 987654321)",
             },
         )
+        self.validate_identity(
+            "SELECT TIMESTAMPNTZFROMPARTS(2013, 4, 5, 12, 00, 00)",
+            "SELECT TIMESTAMP_FROM_PARTS(2013, 4, 5, 12, 00, 00)",
+        )
         self.validate_all(
             "SELECT TIMESTAMP_FROM_PARTS(2013, 4, 5, 12, 00, 00)",
             read={
                 "duckdb": "SELECT MAKE_TIMESTAMP(2013, 4, 5, 12, 00, 00)",
+                "snowflake": "SELECT TIMESTAMP_NTZ_FROM_PARTS(2013, 4, 5, 12, 00, 00)",
             },
             write={
                 "duckdb": "SELECT MAKE_TIMESTAMP(2013, 4, 5, 12, 00, 00)",
@@ -519,21 +524,11 @@ WHERE
             self.validate_all(
                 f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
                 read={
-                    "snowflake": f"SELECT MEDIAN(x){suffix}",
                     "postgres": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
                 },
                 write={
                     "": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x NULLS LAST){suffix}",
                     "duckdb": f"SELECT QUANTILE_CONT(x, 0.5 ORDER BY x){suffix}",
-                    "postgres": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
-                    "snowflake": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
-                },
-            )
-            self.validate_all(
-                f"SELECT MEDIAN(x){suffix}",
-                write={
-                    "": f"SELECT PERCENTILE_CONT(x, 0.5){suffix}",
-                    "duckdb": f"SELECT QUANTILE_CONT(x, 0.5){suffix}",
                     "postgres": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
                     "snowflake": f"SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x){suffix}",
                 },
@@ -755,6 +750,8 @@ WHERE
             write={
                 "spark": "SELECT COLLECT_LIST(DISTINCT a)",
                 "snowflake": "SELECT ARRAY_AGG(DISTINCT a)",
+                "duckdb": "SELECT ARRAY_AGG(DISTINCT a) FILTER(WHERE a IS NOT NULL)",
+                "presto": "SELECT ARRAY_AGG(DISTINCT a) FILTER(WHERE a IS NOT NULL)",
             },
         )
         self.validate_all(
@@ -901,6 +898,51 @@ WHERE
                 "redshift": "SELECT CONVERT_TIMEZONE('America/Los_Angeles', 'America/New_York', '2024-08-06 09:10:00.000')",
                 "mysql": "SELECT CONVERT_TZ('2024-08-06 09:10:00.000', 'America/Los_Angeles', 'America/New_York')",
                 "duckdb": "SELECT CAST('2024-08-06 09:10:00.000' AS TIMESTAMP) AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'America/New_York'",
+            },
+        )
+
+        self.validate_identity(
+            "SELECT UUID_STRING(), UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 'foo')"
+        )
+
+        self.validate_all(
+            "UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 'foo')",
+            read={
+                "snowflake": "UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 'foo')",
+            },
+            write={
+                "hive": "UUID()",
+                "spark2": "UUID()",
+                "spark": "UUID()",
+                "databricks": "UUID()",
+                "duckdb": "UUID()",
+                "presto": "UUID()",
+                "trino": "UUID()",
+                "postgres": "GEN_RANDOM_UUID()",
+                "bigquery": "GENERATE_UUID()",
+            },
+        )
+        self.validate_identity("TRY_TO_TIMESTAMP(foo)").assert_is(exp.Anonymous)
+        self.validate_identity("TRY_TO_TIMESTAMP('12345')").assert_is(exp.Anonymous)
+        self.validate_all(
+            "SELECT TRY_TO_TIMESTAMP('2024-01-15 12:30:00.000')",
+            write={
+                "snowflake": "SELECT TRY_CAST('2024-01-15 12:30:00.000' AS TIMESTAMP)",
+                "duckdb": "SELECT TRY_CAST('2024-01-15 12:30:00.000' AS TIMESTAMP)",
+            },
+        )
+        self.validate_all(
+            "SELECT TRY_TO_TIMESTAMP('invalid')",
+            write={
+                "snowflake": "SELECT TRY_CAST('invalid' AS TIMESTAMP)",
+                "duckdb": "SELECT TRY_CAST('invalid' AS TIMESTAMP)",
+            },
+        )
+        self.validate_all(
+            "SELECT TRY_TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/DD/yyyy hh24:mi:ss')",
+            write={
+                "snowflake": "SELECT TRY_TO_TIMESTAMP('04/05/2013 01:02:03', 'mm/DD/yyyy hh24:mi:ss')",
+                "duckdb": "SELECT CAST(TRY_STRPTIME('04/05/2013 01:02:03', '%m/%d/%Y %H:%M:%S') AS TIMESTAMP)",
             },
         )
 
@@ -1059,6 +1101,20 @@ WHERE
             write={
                 "snowflake": "SELECT * FROM (SELECT * FROM t1 JOIN t2 ON t1.a = t2.c) TABLESAMPLE BERNOULLI (1)",
                 "spark": "SELECT * FROM (SELECT * FROM t1 JOIN t2 ON t1.a = t2.c) TABLESAMPLE (1 PERCENT)",
+            },
+        )
+        self.validate_all(
+            "TO_DOUBLE(expr)",
+            write={
+                "snowflake": "TO_DOUBLE(expr)",
+                "duckdb": "CAST(expr AS DOUBLE)",
+            },
+        )
+        self.validate_all(
+            "TO_DOUBLE(expr, fmt)",
+            write={
+                "snowflake": "TO_DOUBLE(expr, fmt)",
+                "duckdb": UnsupportedError,
             },
         )
 
@@ -2115,6 +2171,16 @@ SINGLE = TRUE""",
         self.validate_identity("SELECT t.$23:a.b", "SELECT GET_PATH(t.$23, 'a.b')")
         self.validate_identity("SELECT t.$17:a[0].b[0].c", "SELECT GET_PATH(t.$17, 'a[0].b[0].c')")
 
+        self.validate_all(
+            """
+            SELECT col:"customer's department"
+            """,
+            write={
+                "snowflake": """SELECT GET_PATH(col, '["customer\\'s department"]')""",
+                "postgres": "SELECT JSON_EXTRACT_PATH(col, 'customer''s department')",
+            },
+        )
+
     def test_alter_set_unset(self):
         self.validate_identity("ALTER TABLE tbl SET DATA_RETENTION_TIME_IN_DAYS=1")
         self.validate_identity("ALTER TABLE tbl SET DEFAULT_DDL_COLLATION='test'")
@@ -2142,4 +2208,21 @@ SINGLE = TRUE""",
         self.validate_identity(
             """SELECT 1 FROM some_table CHANGES (INFORMATION => APPEND_ONLY) AT (TIMESTAMP => TO_TIMESTAMP_TZ('2024-07-01 00:00:00+00:00')) END (TIMESTAMP => TO_TIMESTAMP_TZ('2024-07-01 14:28:59.999999+00:00'))""",
             """SELECT 1 FROM some_table CHANGES (INFORMATION => APPEND_ONLY) AT (TIMESTAMP => CAST('2024-07-01 00:00:00+00:00' AS TIMESTAMPTZ)) END (TIMESTAMP => CAST('2024-07-01 14:28:59.999999+00:00' AS TIMESTAMPTZ))""",
+        )
+
+    def test_grant(self):
+        grant_cmds = [
+            "GRANT SELECT ON FUTURE TABLES IN DATABASE d1 TO ROLE r1",
+            "GRANT INSERT, DELETE ON FUTURE TABLES IN SCHEMA d1.s1 TO ROLE r2",
+            "GRANT SELECT ON ALL TABLES IN SCHEMA mydb.myschema to ROLE analyst",
+            "GRANT SELECT, INSERT ON FUTURE TABLES IN SCHEMA mydb.myschema TO ROLE role1",
+            "GRANT CREATE MATERIALIZED VIEW ON SCHEMA mydb.myschema TO DATABASE ROLE mydb.dr1",
+        ]
+
+        for sql in grant_cmds:
+            with self.subTest(f"Testing Snowflake's GRANT command statement: {sql}"):
+                self.validate_identity(sql, check_command_warning=True)
+
+        self.validate_identity(
+            "GRANT ALL PRIVILEGES ON FUNCTION mydb.myschema.ADD5(number) TO ROLE analyst"
         )

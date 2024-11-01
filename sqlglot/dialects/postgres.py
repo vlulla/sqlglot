@@ -286,9 +286,6 @@ class Postgres(Dialect):
 
         KEYWORDS = {
             **tokens.Tokenizer.KEYWORDS,
-            "~~": TokenType.LIKE,
-            "~~*": TokenType.ILIKE,
-            "~*": TokenType.IRLIKE,
             "~": TokenType.RLIKE,
             "@@": TokenType.DAT,
             "@>": TokenType.AT_GT,
@@ -373,6 +370,7 @@ class Postgres(Dialect):
         FUNCTION_PARSERS = {
             **parser.Parser.FUNCTION_PARSERS,
             "DATE_PART": lambda self: self._parse_date_part(),
+            "JSONB_EXISTS": lambda self: self._parse_jsonb_exists(),
         }
 
         BITWISE = {
@@ -386,12 +384,10 @@ class Postgres(Dialect):
 
         RANGE_PARSERS = {
             **parser.Parser.RANGE_PARSERS,
-            TokenType.AT_GT: binary_range_parser(exp.ArrayContainsAll),
             TokenType.DAMP: binary_range_parser(exp.ArrayOverlaps),
             TokenType.DAT: lambda self, this: self.expression(
                 exp.MatchAgainst, this=self._parse_bitwise(), expressions=[this]
             ),
-            TokenType.LT_AT: binary_range_parser(exp.ArrayContainsAll, reverse_args=True),
             TokenType.OPERATOR: lambda self, this: self._parse_operator(this),
         }
 
@@ -448,6 +444,14 @@ class Postgres(Dialect):
         def _parse_unique_key(self) -> t.Optional[exp.Expression]:
             return None
 
+        def _parse_jsonb_exists(self) -> exp.JSONBExists:
+            return self.expression(
+                exp.JSONBExists,
+                this=self._parse_bitwise(),
+                path=self._match(TokenType.COMMA)
+                and self.dialect.to_json_path(self._parse_bitwise()),
+            )
+
     class Generator(generator.Generator):
         SINGLE_STRING_INTERVAL = True
         RENAME_TABLE_WITH_DB = False
@@ -467,6 +471,7 @@ class Postgres(Dialect):
         CAN_IMPLEMENT_ARRAY_ANY = True
         COPY_HAS_INTO_KEYWORD = False
         ARRAY_CONCAT_IS_VAR_LEN = False
+        SUPPORTS_MEDIAN = False
 
         SUPPORTED_JSON_PATH_PARTS = {
             exp.JSONPathKey,
@@ -489,8 +494,6 @@ class Postgres(Dialect):
             **generator.Generator.TRANSFORMS,
             exp.AnyValue: any_value_to_max_sql,
             exp.ArrayConcat: lambda self, e: self.arrayconcat_sql(e, name="ARRAY_CAT"),
-            exp.ArrayContainsAll: lambda self, e: self.binary(e, "@>"),
-            exp.ArrayOverlaps: lambda self, e: self.binary(e, "&&"),
             exp.ArrayFilter: filter_array_using_unnest,
             exp.ArraySize: lambda self, e: self.func("ARRAY_LENGTH", e.this, e.expression or "1"),
             exp.BitwiseXor: lambda self, e: self.binary(e, "#"),
@@ -557,6 +560,7 @@ class Postgres(Dialect):
             exp.TsOrDsAdd: _date_add_sql("+"),
             exp.TsOrDsDiff: _date_diff_sql,
             exp.UnixToTime: lambda self, e: self.func("TO_TIMESTAMP", e.this),
+            exp.Uuid: lambda *_: "GEN_RANDOM_UUID()",
             exp.TimeToUnix: lambda self, e: self.func(
                 "DATE_PART", exp.Literal.string("epoch"), e.this
             ),

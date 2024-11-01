@@ -14,6 +14,16 @@ class TestPresto(Validator):
         self.validate_identity("CAST(x AS HYPERLOGLOG)")
 
         self.validate_all(
+            "CAST(x AS BOOLEAN)",
+            read={
+                "tsql": "CAST(x AS BIT)",
+            },
+            write={
+                "presto": "CAST(x AS BOOLEAN)",
+                "tsql": "CAST(x AS BIT)",
+            },
+        )
+        self.validate_all(
             "SELECT FROM_ISO8601_TIMESTAMP('2020-05-11T11:15:05')",
             write={
                 "duckdb": "SELECT CAST('2020-05-11T11:15:05' AS TIMESTAMPTZ)",
@@ -158,8 +168,8 @@ class TestPresto(Validator):
             write={
                 "duckdb": "STR_SPLIT(x, 'a.')",
                 "presto": "SPLIT(x, 'a.')",
-                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a.'))",
-                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a.'))",
+                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a.', '\\\\E'))",
+                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a.', '\\\\E'))",
             },
         )
         self.validate_all(
@@ -276,10 +286,19 @@ class TestPresto(Validator):
         self.validate_all(
             "DATE_PARSE(SUBSTR(x, 1, 10), '%Y-%m-%d')",
             write={
-                "duckdb": "STRPTIME(SUBSTR(x, 1, 10), '%Y-%m-%d')",
-                "presto": "DATE_PARSE(SUBSTR(x, 1, 10), '%Y-%m-%d')",
-                "hive": "CAST(SUBSTR(x, 1, 10) AS TIMESTAMP)",
-                "spark": "TO_TIMESTAMP(SUBSTR(x, 1, 10), 'yyyy-MM-dd')",
+                "duckdb": "STRPTIME(SUBSTRING(x, 1, 10), '%Y-%m-%d')",
+                "presto": "DATE_PARSE(SUBSTRING(x, 1, 10), '%Y-%m-%d')",
+                "hive": "CAST(SUBSTRING(x, 1, 10) AS TIMESTAMP)",
+                "spark": "TO_TIMESTAMP(SUBSTRING(x, 1, 10), 'yyyy-MM-dd')",
+            },
+        )
+        self.validate_all(
+            "DATE_PARSE(SUBSTRING(x, 1, 10), '%Y-%m-%d')",
+            write={
+                "duckdb": "STRPTIME(SUBSTRING(x, 1, 10), '%Y-%m-%d')",
+                "presto": "DATE_PARSE(SUBSTRING(x, 1, 10), '%Y-%m-%d')",
+                "hive": "CAST(SUBSTRING(x, 1, 10) AS TIMESTAMP)",
+                "spark": "TO_TIMESTAMP(SUBSTRING(x, 1, 10), 'yyyy-MM-dd')",
             },
         )
         self.validate_all(
@@ -394,13 +413,6 @@ class TestPresto(Validator):
         self.validate_all(
             "CAST(x AS TIMESTAMP)",
             read={"mysql": "TIMESTAMP(x)"},
-        )
-        self.validate_all(
-            "TIMESTAMP(x, 'America/Los_Angeles')",
-            write={
-                "duckdb": "CAST(x AS TIMESTAMP) AT TIME ZONE 'America/Los_Angeles'",
-                "presto": "AT_TIMEZONE(CAST(x AS TIMESTAMP), 'America/Los_Angeles')",
-            },
         )
         # this case isn't really correct, but it's a fall back for mysql's version
         self.validate_all(

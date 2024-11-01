@@ -15,6 +15,7 @@ from sqlglot.dialects.dialect import (
 from sqlglot.helper import seq_get
 from sqlglot.parser import OPTIONS_TYPE, build_coalesce
 from sqlglot.tokens import TokenType
+from sqlglot.errors import ParseError
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
@@ -95,6 +96,7 @@ class Oracle(Dialect):
             "(+)": TokenType.JOIN_MARKER,
             "BINARY_DOUBLE": TokenType.DOUBLE,
             "BINARY_FLOAT": TokenType.FLOAT,
+            "BULK COLLECT INTO": TokenType.BULK_COLLECT_INTO,
             "COLUMNS": TokenType.COLUMN,
             "MATCH_RECOGNIZE": TokenType.MATCH_RECOGNIZE,
             "MINUS": TokenType.EXCEPT,
@@ -118,7 +120,11 @@ class Oracle(Dialect):
             "TO_CHAR": _build_timetostr_or_tochar,
             "TO_TIMESTAMP": build_formatted_time(exp.StrToTime, "oracle"),
             "TO_DATE": build_formatted_time(exp.StrToDate, "oracle"),
-            "TRUNC": lambda args: exp.DateTrunc(unit=seq_get(args, 1), this=seq_get(args, 0)),
+            "TRUNC": lambda args: exp.DateTrunc(
+                unit=seq_get(args, 1) or exp.Literal.string("DD"),
+                this=seq_get(args, 0),
+                unabbreviate=False,
+            ),
         }
 
         NO_PAREN_FUNCTION_PARSERS = {
@@ -202,6 +208,57 @@ class Oracle(Dialect):
             )
 
         def _parse_hint(self) -> t.Optional[exp.Hint]:
+            start_index = self._index
+            should_fallback_to_string = False
+
+            if not self._match(TokenType.HINT):
+                return None
+
+            hints = []
+
+            try:
+                for hint in iter(
+                    lambda: self._parse_csv(
+                        lambda: self._parse_hint_function_call() or self._parse_var(upper=True),
+                    ),
+                    [],
+                ):
+                    hints.extend(hint)
+            except ParseError:
+                should_fallback_to_string = True
+
+            if not self._match_pair(TokenType.STAR, TokenType.SLASH):
+                should_fallback_to_string = True
+
+            if should_fallback_to_string:
+                self._retreat(start_index)
+                return self._parse_hint_fallback_to_string()
+
+            return self.expression(exp.Hint, expressions=hints)
+
+        def _parse_hint_function_call(self) -> t.Optional[exp.Expression]:
+            if not self._curr or not self._next or self._next.token_type != TokenType.L_PAREN:
+                return None
+
+            this = self._curr.text
+
+            self._advance(2)
+            args = self._parse_hint_args()
+            this = self.expression(exp.Anonymous, this=this, expressions=args)
+            self._match_r_paren(this)
+            return this
+
+        def _parse_hint_args(self):
+            args = []
+            result = self._parse_var()
+
+            while result:
+                args.append(result)
+                result = self._parse_var()
+
+            return args
+
+        def _parse_hint_fallback_to_string(self) -> t.Optional[exp.Hint]:
             if self._match(TokenType.HINT):
                 start = self._curr
                 while self._curr and not self._match_pair(TokenType.STAR, TokenType.SLASH):
@@ -239,6 +296,24 @@ class Oracle(Dialect):
                 on_condition=self._parse_on_condition(),
             )
 
+        def _parse_into(self) -> t.Optional[exp.Into]:
+            # https://docs.oracle.com/en/database/oracle/oracle-database/19/lnpls/SELECT-INTO-statement.html
+            bulk_collect = self._match(TokenType.BULK_COLLECT_INTO)
+            if not bulk_collect and not self._match(TokenType.INTO):
+                return None
+
+            index = self._index
+
+            expressions = self._parse_expressions()
+            if len(expressions) == 1:
+                self._retreat(index)
+                self._match(TokenType.TABLE)
+                return self.expression(
+                    exp.Into, this=self._parse_table(schema=True), bulk_collect=bulk_collect
+                )
+
+            return self.expression(exp.Into, bulk_collect=bulk_collect, expressions=expressions)
+
     class Generator(generator.Generator):
         LOCKING_READS_SUPPORTED = True
         JOIN_HINTS = False
@@ -250,6 +325,7 @@ class Oracle(Dialect):
         LAST_DAY_SUPPORTS_DATE_PART = False
         SUPPORTS_SELECT_INTO = True
         TZ_TO_WITH_TIME_ZONE = True
+        QUERY_HINT_SEP = " "
 
         TYPE_MAPPING = {
             **generator.Generator.TYPE_MAPPING,
@@ -342,3 +418,22 @@ class Oracle(Dialect):
         def coalesce_sql(self, expression: exp.Coalesce) -> str:
             func_name = "NVL" if expression.args.get("is_nvl") else "COALESCE"
             return rename_func(func_name)(self, expression)
+
+        def into_sql(self, expression: exp.Into) -> str:
+            into = "INTO" if not expression.args.get("bulk_collect") else "BULK COLLECT INTO"
+            if expression.this:
+                return f"{self.seg(into)} {self.sql(expression, 'this')}"
+
+            return f"{self.seg(into)} {self.expressions(expression)}"
+
+        def hint_sql(self, expression: exp.Hint) -> str:
+            expressions = []
+
+            for expression in expression.expressions:
+                if isinstance(expression, exp.Anonymous):
+                    formatted_args = self.format_args(*expression.expressions, sep=" ")
+                    expressions.append(f"{self.sql(expression, 'this')}({formatted_args})")
+                else:
+                    expressions.append(self.sql(expression))
+
+            return f" /*+ {self.expressions(sqls=expressions, sep=self.QUERY_HINT_SEP).strip()} */"

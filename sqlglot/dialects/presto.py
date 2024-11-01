@@ -30,6 +30,7 @@ from sqlglot.dialects.dialect import (
     unit_to_str,
     sequence_sql,
     build_regexp_extract,
+    explode_to_unnest_sql,
 )
 from sqlglot.dialects.hive import Hive
 from sqlglot.dialects.mysql import MySQL
@@ -38,21 +39,6 @@ from sqlglot.tokens import TokenType
 from sqlglot.transforms import unqualify_columns
 
 DATE_ADD_OR_SUB = t.Union[exp.DateAdd, exp.TimestampAdd, exp.DateSub]
-
-
-def _explode_to_unnest_sql(self: Presto.Generator, expression: exp.Lateral) -> str:
-    if isinstance(expression.this, exp.Explode):
-        return self.sql(
-            exp.Join(
-                this=exp.Unnest(
-                    expressions=[expression.this.this],
-                    alias=expression.args.get("alias"),
-                    offset=isinstance(expression.this, exp.Posexplode),
-                ),
-                kind="cross",
-            )
-        )
-    return self.lateral_sql(expression)
 
 
 def _initcap_sql(self: Presto.Generator, expression: exp.Initcap) -> str:
@@ -164,35 +150,6 @@ def _unix_to_time_sql(self: Presto.Generator, expression: exp.UnixToTime) -> str
         return rename_func("FROM_UNIXTIME")(self, expression)
 
     return f"FROM_UNIXTIME(CAST({timestamp} AS DOUBLE) / POW(10, {scale}))"
-
-
-def _jsonextract_sql(self: Presto.Generator, expression: exp.JSONExtract) -> str:
-    is_json_extract = self.dialect.settings.get("variant_extract_is_json_extract", True)
-
-    # Generate JSON_EXTRACT unless the user has configured that a Snowflake / Databricks
-    # VARIANT extract (e.g. col:x.y) should map to dot notation (i.e ROW access) in Presto/Trino
-    if not expression.args.get("variant_extract") or is_json_extract:
-        return self.func(
-            "JSON_EXTRACT", expression.this, expression.expression, *expression.expressions
-        )
-
-    this = self.sql(expression, "this")
-
-    # Convert the JSONPath extraction `JSON_EXTRACT(col, '$.x.y) to a ROW access col.x.y
-    segments = []
-    for path_key in expression.expression.expressions[1:]:
-        if not isinstance(path_key, exp.JSONPathKey):
-            # Cannot transpile subscripts, wildcards etc to dot notation
-            self.unsupported(f"Cannot transpile JSONPath segment '{path_key}' to ROW access")
-            continue
-        key = path_key.this
-        if not exp.SAFE_IDENTIFIER_RE.match(key):
-            key = f'"{key}"'
-        segments.append(f".{key}")
-
-    expr = "".join(segments)
-
-    return f"{this}{expr}"
 
 
 def _to_int(self: Presto.Generator, expression: exp.Expression) -> exp.Expression:
@@ -360,6 +317,7 @@ class Presto(Dialect):
         PARSE_JSON_NAME = "JSON_PARSE"
         PAD_FILL_PATTERN_IS_REQUIRED = True
         EXCEPT_INTERSECT_SUPPORT_ALL_CLAUSE = False
+        SUPPORTS_MEDIAN = False
 
         PROPERTIES_LOCATION = {
             **generator.Generator.PROPERTIES_LOCATION,
@@ -369,16 +327,18 @@ class Presto(Dialect):
 
         TYPE_MAPPING = {
             **generator.Generator.TYPE_MAPPING,
-            exp.DataType.Type.INT: "INTEGER",
-            exp.DataType.Type.FLOAT: "REAL",
             exp.DataType.Type.BINARY: "VARBINARY",
-            exp.DataType.Type.TEXT: "VARCHAR",
-            exp.DataType.Type.TIMETZ: "TIME",
-            exp.DataType.Type.TIMESTAMPTZ: "TIMESTAMP",
-            exp.DataType.Type.STRUCT: "ROW",
+            exp.DataType.Type.BIT: "BOOLEAN",
             exp.DataType.Type.DATETIME: "TIMESTAMP",
             exp.DataType.Type.DATETIME64: "TIMESTAMP",
+            exp.DataType.Type.FLOAT: "REAL",
             exp.DataType.Type.HLLSKETCH: "HYPERLOGLOG",
+            exp.DataType.Type.INT: "INTEGER",
+            exp.DataType.Type.STRUCT: "ROW",
+            exp.DataType.Type.TEXT: "VARCHAR",
+            exp.DataType.Type.TIMESTAMPTZ: "TIMESTAMP",
+            exp.DataType.Type.TIMESTAMPNTZ: "TIMESTAMP",
+            exp.DataType.Type.TIMETZ: "TIME",
         }
 
         TRANSFORMS = {
@@ -429,17 +389,14 @@ class Presto(Dialect):
             exp.GenerateSeries: sequence_sql,
             exp.GenerateDateArray: sequence_sql,
             exp.Group: transforms.preprocess([transforms.unalias_group]),
-            exp.GroupConcat: lambda self, e: self.func(
-                "ARRAY_JOIN", self.func("ARRAY_AGG", e.this), e.args.get("separator")
-            ),
             exp.If: if_sql(),
             exp.ILike: no_ilike_sql,
             exp.Initcap: _initcap_sql,
-            exp.JSONExtract: _jsonextract_sql,
+            exp.JSONExtract: lambda self, e: self.jsonextract_sql(e),
             exp.Last: _first_last_sql,
             exp.LastValue: _first_last_sql,
             exp.LastDay: lambda self, e: self.func("LAST_DAY_OF_MONTH", e.this),
-            exp.Lateral: _explode_to_unnest_sql,
+            exp.Lateral: explode_to_unnest_sql,
             exp.Left: left_to_substring_sql,
             exp.Levenshtein: rename_func("LEVENSHTEIN_DISTANCE"),
             exp.LogicalAnd: rename_func("BOOL_AND"),
@@ -693,3 +650,40 @@ class Presto(Dialect):
                     expression = t.cast(exp.Delete, expression.transform(unqualify_columns))
 
             return super().delete_sql(expression)
+
+        def jsonextract_sql(self, expression: exp.JSONExtract) -> str:
+            is_json_extract = self.dialect.settings.get("variant_extract_is_json_extract", True)
+
+            # Generate JSON_EXTRACT unless the user has configured that a Snowflake / Databricks
+            # VARIANT extract (e.g. col:x.y) should map to dot notation (i.e ROW access) in Presto/Trino
+            if not expression.args.get("variant_extract") or is_json_extract:
+                return self.func(
+                    "JSON_EXTRACT", expression.this, expression.expression, *expression.expressions
+                )
+
+            this = self.sql(expression, "this")
+
+            # Convert the JSONPath extraction `JSON_EXTRACT(col, '$.x.y) to a ROW access col.x.y
+            segments = []
+            for path_key in expression.expression.expressions[1:]:
+                if not isinstance(path_key, exp.JSONPathKey):
+                    # Cannot transpile subscripts, wildcards etc to dot notation
+                    self.unsupported(
+                        f"Cannot transpile JSONPath segment '{path_key}' to ROW access"
+                    )
+                    continue
+                key = path_key.this
+                if not exp.SAFE_IDENTIFIER_RE.match(key):
+                    key = f'"{key}"'
+                segments.append(f".{key}")
+
+            expr = "".join(segments)
+
+            return f"{this}{expr}"
+
+        def groupconcat_sql(self, expression: exp.GroupConcat) -> str:
+            return self.func(
+                "ARRAY_JOIN",
+                self.func("ARRAY_AGG", expression.this),
+                expression.args.get("separator"),
+            )

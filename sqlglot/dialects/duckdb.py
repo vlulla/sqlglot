@@ -35,9 +35,11 @@ from sqlglot.dialects.dialect import (
     unit_to_str,
     sha256_sql,
     build_regexp_extract,
+    explode_to_unnest_sql,
 )
 from sqlglot.helper import seq_get
 from sqlglot.tokens import TokenType
+from sqlglot.parser import binary_range_parser
 
 DATETIME_DELTA = t.Union[
     exp.DateAdd, exp.TimeAdd, exp.DatetimeAdd, exp.TsOrDsAdd, exp.DateSub, exp.DatetimeSub
@@ -102,9 +104,8 @@ def _timediff_sql(self: DuckDB.Generator, expression: exp.TimeDiff) -> str:
     return self.func("DATE_DIFF", unit_to_str(expression), expr, this)
 
 
+@generator.unsupported_args(("expression", "DuckDB's ARRAY_SORT does not support a comparator."))
 def _array_sort_sql(self: DuckDB.Generator, expression: exp.ArraySort) -> str:
-    if expression.expression:
-        self.unsupported("DuckDB ARRAY_SORT does not support a comparator")
     return self.func("ARRAY_SORT", expression.this)
 
 
@@ -290,6 +291,10 @@ class DuckDB(Dialect):
         KEYWORDS = {
             **tokens.Tokenizer.KEYWORDS,
             "//": TokenType.DIV,
+            "**": TokenType.DSTAR,
+            "^@": TokenType.CARET_AT,
+            "@>": TokenType.AT_GT,
+            "<@": TokenType.LT_AT,
             "ATTACH": TokenType.COMMAND,
             "BINARY": TokenType.VARBINARY,
             "BITSTRING": TokenType.BIT,
@@ -326,6 +331,19 @@ class DuckDB(Dialect):
             **parser.Parser.BITWISE,
             TokenType.TILDA: exp.RegexpLike,
         }
+        BITWISE.pop(TokenType.CARET)
+
+        RANGE_PARSERS = {
+            **parser.Parser.RANGE_PARSERS,
+            TokenType.DAMP: binary_range_parser(exp.ArrayOverlaps),
+            TokenType.CARET_AT: binary_range_parser(exp.StartsWith),
+        }
+
+        EXPONENT = {
+            **parser.Parser.EXPONENT,
+            TokenType.CARET: exp.Pow,
+            TokenType.DSTAR: exp.Pow,
+        }
 
         FUNCTIONS_WITH_ALIASED_ARGS = {*parser.Parser.FUNCTIONS_WITH_ALIASED_ARGS, "STRUCT_PACK"}
 
@@ -356,9 +374,6 @@ class DuckDB(Dialect):
             "LIST_VALUE": lambda args: exp.Array(expressions=args),
             "MAKE_TIME": exp.TimeFromParts.from_arg_list,
             "MAKE_TIMESTAMP": _build_make_timestamp,
-            "MEDIAN": lambda args: exp.PercentileCont(
-                this=seq_get(args, 0), expression=exp.Literal.number(0.5)
-            ),
             "QUANTILE_CONT": exp.PercentileCont.from_arg_list,
             "QUANTILE_DISC": exp.PercentileDisc.from_arg_list,
             "REGEXP_EXTRACT": build_regexp_extract,
@@ -481,7 +496,6 @@ class DuckDB(Dialect):
             **generator.Generator.TRANSFORMS,
             exp.ApproxDistinct: approx_count_distinct_sql,
             exp.Array: inline_array_unless_query,
-            exp.ArrayContainsAll: rename_func("ARRAY_HAS_ALL"),
             exp.ArrayFilter: rename_func("LIST_FILTER"),
             exp.ArraySize: rename_func("ARRAY_LENGTH"),
             exp.ArgMax: arg_max_or_min_no_count("ARG_MAX"),
@@ -519,9 +533,11 @@ class DuckDB(Dialect):
             exp.IntDiv: lambda self, e: self.binary(e, "//"),
             exp.IsInf: rename_func("ISINF"),
             exp.IsNan: rename_func("ISNAN"),
+            exp.JSONBExists: rename_func("JSON_EXISTS"),
             exp.JSONExtract: _arrow_json_extract_sql,
             exp.JSONExtractScalar: _arrow_json_extract_sql,
             exp.JSONFormat: _json_format_sql,
+            exp.Lateral: explode_to_unnest_sql,
             exp.LogicalOr: rename_func("BOOL_OR"),
             exp.LogicalAnd: rename_func("BOOL_AND"),
             exp.MD5Digest: lambda self, e: self.func("UNHEX", self.func("MD5", e.this)),
@@ -550,6 +566,7 @@ class DuckDB(Dialect):
             exp.ReturnsProperty: lambda self, e: "TABLE" if isinstance(e.this, exp.Schema) else "",
             exp.Rand: rename_func("RANDOM"),
             exp.SafeDivide: no_safe_divide_sql,
+            exp.SHA: rename_func("SHA1"),
             exp.SHA2: sha256_sql,
             exp.Split: rename_func("STR_SPLIT"),
             exp.SortArray: _sort_array_sql,

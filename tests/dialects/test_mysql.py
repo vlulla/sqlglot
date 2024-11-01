@@ -82,6 +82,10 @@ class TestMySQL(Validator):
             "CREATE OR REPLACE VIEW my_view AS SELECT column1 AS `boo`, column2 AS `foo` FROM my_table WHERE column3 = 'some_value' UNION SELECT q.* FROM fruits_table, JSON_TABLE(Fruits, '$[*]' COLUMNS(id VARCHAR(255) PATH '$.$id', value VARCHAR(255) PATH '$.value')) AS q",
         )
         self.validate_identity(
+            "CREATE TABLE t (name VARCHAR)",
+            "CREATE TABLE t (name TEXT)",
+        )
+        self.validate_identity(
             "ALTER TABLE t ADD KEY `i` (`c`)",
             "ALTER TABLE t ADD INDEX `i` (`c`)",
         )
@@ -135,6 +139,7 @@ class TestMySQL(Validator):
         )
 
     def test_identity(self):
+        self.validate_identity("SELECT HIGH_PRIORITY STRAIGHT_JOIN SQL_CALC_FOUND_ROWS * FROM t")
         self.validate_identity("SELECT CAST(COALESCE(`id`, 'NULL') AS CHAR CHARACTER SET binary)")
         self.validate_identity("SELECT e.* FROM e STRAIGHT_JOIN p ON e.x = p.y")
         self.validate_identity("ALTER TABLE test_table ALTER COLUMN test_column SET DEFAULT 1")
@@ -174,6 +179,10 @@ class TestMySQL(Validator):
         )
         self.validate_identity(
             "REPLACE INTO table SELECT id FROM table2 WHERE cnt > 100", check_command_warning=True
+        )
+        self.validate_identity(
+            "CAST(x AS VARCHAR)",
+            "CAST(x AS CHAR)",
         )
         self.validate_identity(
             """SELECT * FROM foo WHERE 3 MEMBER OF(info->'$.value')""",
@@ -379,7 +388,7 @@ class TestMySQL(Validator):
             "sqlite": "SELECT x'CC'",
             "starrocks": "SELECT x'CC'",
             "tableau": "SELECT 204",
-            "teradata": "SELECT 204",
+            "teradata": "SELECT X'CC'",
             "trino": "SELECT X'CC'",
             "tsql": "SELECT 0xCC",
         }
@@ -400,7 +409,7 @@ class TestMySQL(Validator):
             "sqlite": "SELECT x'0000CC'",
             "starrocks": "SELECT x'0000CC'",
             "tableau": "SELECT 204",
-            "teradata": "SELECT 204",
+            "teradata": "SELECT X'0000CC'",
             "trino": "SELECT X'0000CC'",
             "tsql": "SELECT 0x0000CC",
         }
@@ -739,16 +748,28 @@ class TestMySQL(Validator):
             },
         )
         self.validate_all(
-            "SELECT * FROM x LEFT JOIN y ON x.id = y.id UNION SELECT * FROM x RIGHT JOIN y ON x.id = y.id LIMIT 0",
+            "SELECT * FROM x LEFT JOIN y ON x.id = y.id UNION ALL SELECT * FROM x RIGHT JOIN y ON x.id = y.id WHERE NOT EXISTS(SELECT 1 FROM x WHERE x.id = y.id) ORDER BY 1 LIMIT 0",
             read={
-                "postgres": "SELECT * FROM x FULL JOIN y ON x.id = y.id LIMIT 0",
+                "postgres": "SELECT * FROM x FULL JOIN y ON x.id = y.id ORDER BY 1 LIMIT 0",
             },
         )
         self.validate_all(
             # MySQL doesn't support FULL OUTER joins
-            "WITH t1 AS (SELECT 1) SELECT * FROM t1 LEFT OUTER JOIN t2 ON t1.x = t2.x UNION SELECT * FROM t1 RIGHT OUTER JOIN t2 ON t1.x = t2.x",
+            "SELECT * FROM t1 LEFT OUTER JOIN t2 ON t1.x = t2.x UNION ALL SELECT * FROM t1 RIGHT OUTER JOIN t2 ON t1.x = t2.x WHERE NOT EXISTS(SELECT 1 FROM t1 WHERE t1.x = t2.x)",
             read={
-                "postgres": "WITH t1 AS (SELECT 1) SELECT * FROM t1 FULL OUTER JOIN t2 ON t1.x = t2.x",
+                "postgres": "SELECT * FROM t1 FULL OUTER JOIN t2 ON t1.x = t2.x",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM t1 LEFT OUTER JOIN t2 USING (x) UNION ALL SELECT * FROM t1 RIGHT OUTER JOIN t2 USING (x) WHERE NOT EXISTS(SELECT 1 FROM t1 WHERE t1.x = t2.x)",
+            read={
+                "postgres": "SELECT * FROM t1 FULL OUTER JOIN t2 USING (x) ",
+            },
+        )
+        self.validate_all(
+            "SELECT * FROM t1 LEFT OUTER JOIN t2 USING (x, y) UNION ALL SELECT * FROM t1 RIGHT OUTER JOIN t2 USING (x, y) WHERE NOT EXISTS(SELECT 1 FROM t1 WHERE t1.x = t2.x AND t1.y = t2.y)",
+            read={
+                "postgres": "SELECT * FROM t1 FULL OUTER JOIN t2 USING (x, y) ",
             },
         )
         self.validate_all(
@@ -1270,3 +1291,27 @@ COMMENT='客户账户表'"""
             self.validate_identity(
                 f"""SELECT JSON_VALUE({json_doc}, '$.price' RETURNING DECIMAL(4, 2) {on_option} ON EMPTY {on_option} ON ERROR) AS price"""
             )
+
+    def test_grant(self):
+        grant_cmds = [
+            "GRANT 'role1', 'role2' TO 'user1'@'localhost', 'user2'@'localhost'",
+            "GRANT SELECT ON world.* TO 'role3'",
+            "GRANT SELECT ON db2.invoice TO 'jeffrey'@'localhost'",
+            "GRANT INSERT ON `d%`.* TO u",
+            "GRANT ALL ON test.* TO ''@'localhost'",
+            "GRANT SELECT (col1), INSERT (col1, col2) ON mydb.mytbl TO 'someuser'@'somehost'",
+            "GRANT SELECT, INSERT, UPDATE ON *.* TO u2",
+        ]
+
+        for sql in grant_cmds:
+            with self.subTest(f"Testing MySQL's GRANT command statement: {sql}"):
+                self.validate_identity(sql, check_command_warning=True)
+
+    def test_explain(self):
+        self.validate_identity(
+            "EXPLAIN ANALYZE SELECT * FROM t", "DESCRIBE ANALYZE SELECT * FROM t"
+        )
+
+        expression = self.parse_one("EXPLAIN ANALYZE SELECT * FROM t")
+        self.assertIsInstance(expression, exp.Describe)
+        self.assertEqual(expression.text("style"), "ANALYZE")

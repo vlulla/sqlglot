@@ -7,7 +7,7 @@ from functools import reduce
 
 from sqlglot import exp
 from sqlglot.errors import ParseError
-from sqlglot.generator import Generator
+from sqlglot.generator import Generator, unsupported_args
 from sqlglot.helper import AutoName, flatten, is_int, seq_get, subclasses
 from sqlglot.jsonpath import JSONPathTokenizer, parse as parse_json_path
 from sqlglot.parser import Parser
@@ -186,9 +186,6 @@ class _Dialect(type):
 
         if enum not in ("", "bigquery"):
             klass.generator_class.SELECT_KINDS = ()
-
-        if enum not in ("", "clickhouse"):
-            klass.generator_class.SUPPORTS_NULLABLE_TYPES = False
 
         if enum not in ("", "athena", "presto", "trino"):
             klass.generator_class.TRY_SUPPORTED = False
@@ -580,7 +577,6 @@ class Dialect(metaclass=_Dialect):
         exp.DataType.Type.DOUBLE: {
             exp.ApproxQuantile,
             exp.Avg,
-            exp.Div,
             exp.Exp,
             exp.Ln,
             exp.Log,
@@ -592,6 +588,7 @@ class Dialect(metaclass=_Dialect):
             exp.Stddev,
             exp.StddevPop,
             exp.StddevSamp,
+            exp.ToDouble,
             exp.Variance,
             exp.VariancePop,
         },
@@ -640,6 +637,7 @@ class Dialect(metaclass=_Dialect):
             exp.Initcap,
             exp.Lower,
             exp.Substring,
+            exp.String,
             exp.TimeToStr,
             exp.TimeToTimeStr,
             exp.Trim,
@@ -692,9 +690,10 @@ class Dialect(metaclass=_Dialect):
         exp.GenerateTimestampArray: lambda self, e: self._annotate_with_type(
             e, exp.DataType.build("ARRAY<TIMESTAMP>")
         ),
+        exp.Greatest: lambda self, e: self._annotate_by_args(e, "this", "expressions"),
         exp.If: lambda self, e: self._annotate_by_args(e, "true", "false"),
         exp.Interval: lambda self, e: self._annotate_with_type(e, exp.DataType.Type.INTERVAL),
-        exp.Least: lambda self, e: self._annotate_by_args(e, "expressions"),
+        exp.Least: lambda self, e: self._annotate_by_args(e, "this", "expressions"),
         exp.Literal: lambda self, e: self._annotate_literal(e),
         exp.Map: lambda self, e: self._annotate_map(e),
         exp.Max: lambda self, e: self._annotate_by_args(e, "this", "expressions"),
@@ -960,9 +959,8 @@ def rename_func(name: str) -> t.Callable[[Generator, exp.Expression], str]:
     return lambda self, expression: self.func(name, *flatten(expression.args.values()))
 
 
+@unsupported_args("accuracy")
 def approx_count_distinct_sql(self: Generator, expression: exp.ApproxDistinct) -> str:
-    if expression.args.get("accuracy"):
-        self.unsupported("APPROX_COUNT_DISTINCT does not support accuracy")
     return self.func("APPROX_COUNT_DISTINCT", expression.this)
 
 
@@ -1019,10 +1017,10 @@ def no_recursive_cte_sql(self: Generator, expression: exp.With) -> str:
     return self.with_sql(expression)
 
 
-def no_safe_divide_sql(self: Generator, expression: exp.SafeDivide) -> str:
+def no_safe_divide_sql(self: Generator, expression: exp.SafeDivide, if_sql: str = "IF") -> str:
     n = self.sql(expression, "this")
     d = self.sql(expression, "expression")
-    return f"IF(({d}) <> 0, ({n}) / ({d}), NULL)"
+    return f"{if_sql}(({d}) <> 0, ({n}) / ({d}), NULL)"
 
 
 def no_tablesample_sql(self: Generator, expression: exp.TableSample) -> str:
@@ -1056,7 +1054,10 @@ def property_sql(self: Generator, expression: exp.Property) -> str:
 
 
 def str_position_sql(
-    self: Generator, expression: exp.StrPosition, generate_instance: bool = False
+    self: Generator,
+    expression: exp.StrPosition,
+    generate_instance: bool = False,
+    str_position_func_name: str = "STRPOS",
 ) -> str:
     this = self.sql(expression, "this")
     substr = self.sql(expression, "substr")
@@ -1069,7 +1070,7 @@ def str_position_sql(
         this = self.func("SUBSTR", this, position)
         position_offset = f" + {position} - 1"
 
-    return self.func("STRPOS", this, substr, instance) + position_offset
+    return self.func(str_position_func_name, this, substr, instance) + position_offset
 
 
 def struct_extract_sql(self: Generator, expression: exp.StructExtract) -> str:
@@ -1362,11 +1363,8 @@ def concat_ws_to_dpipe_sql(self: Generator, expression: exp.ConcatWs) -> str:
     )
 
 
+@unsupported_args("position", "occurrence", "parameters")
 def regexp_extract_sql(self: Generator, expression: exp.RegexpExtract) -> str:
-    bad_args = list(filter(expression.args.get, ("position", "occurrence", "parameters")))
-    if bad_args:
-        self.unsupported(f"REGEXP_EXTRACT does not support the following arg(s): {bad_args}")
-
     group = expression.args.get("group")
 
     # Do not render group if it's the default value for this dialect
@@ -1376,11 +1374,8 @@ def regexp_extract_sql(self: Generator, expression: exp.RegexpExtract) -> str:
     return self.func("REGEXP_EXTRACT", expression.this, expression.expression, group)
 
 
+@unsupported_args("position", "occurrence", "modifiers")
 def regexp_replace_sql(self: Generator, expression: exp.RegexpReplace) -> str:
-    bad_args = list(filter(expression.args.get, ("position", "occurrence", "modifiers")))
-    if bad_args:
-        self.unsupported(f"REGEXP_REPLACE does not support the following arg(s): {bad_args}")
-
     return self.func(
         "REGEXP_REPLACE", expression.this, expression.expression, expression.args["replacement"]
     )
@@ -1448,10 +1443,8 @@ def generatedasidentitycolumnconstraint_sql(
 
 
 def arg_max_or_min_no_count(name: str) -> t.Callable[[Generator, exp.ArgMax | exp.ArgMin], str]:
+    @unsupported_args("count")
     def _arg_max_or_min_sql(self: Generator, expression: exp.ArgMax | exp.ArgMin) -> str:
-        if expression.args.get("count"):
-            self.unsupported(f"Only two arguments are supported in function {name}.")
-
         return self.func(name, expression.this, expression.expression)
 
     return _arg_max_or_min_sql
@@ -1598,6 +1591,8 @@ def json_extract_segments(
         if not isinstance(path, exp.JSONPath):
             return rename_func(name)(self, expression)
 
+        escape = path.args.get("escape")
+
         segments = []
         for segment in path.expressions:
             path = self.sql(segment)
@@ -1605,6 +1600,9 @@ def json_extract_segments(
                 if isinstance(segment, exp.JSONPathPart) and (
                     quoted_index or not isinstance(segment, exp.JSONPathSubscript)
                 ):
+                    if escape:
+                        path = self.escape_str(path)
+
                     path = f"{self.dialect.QUOTE_START}{path}{self.dialect.QUOTE_END}"
 
                 segments.append(path)
@@ -1701,3 +1699,18 @@ def build_regexp_extract(args: t.List, dialect: Dialect) -> exp.RegexpExtract:
         expression=seq_get(args, 1),
         group=seq_get(args, 2) or exp.Literal.number(dialect.REGEXP_EXTRACT_DEFAULT_GROUP),
     )
+
+
+def explode_to_unnest_sql(self: Generator, expression: exp.Lateral) -> str:
+    if isinstance(expression.this, exp.Explode):
+        return self.sql(
+            exp.Join(
+                this=exp.Unnest(
+                    expressions=[expression.this.this],
+                    alias=expression.args.get("alias"),
+                    offset=isinstance(expression.this, exp.Posexplode),
+                ),
+                kind="cross",
+            )
+        )
+    return self.lateral_sql(expression)

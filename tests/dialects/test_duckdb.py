@@ -18,6 +18,23 @@ class TestDuckDB(Validator):
             "WITH _data AS (SELECT [STRUCT(1 AS a, 2 AS b), STRUCT(2 AS a, 3 AS b)] AS col) SELECT col.b FROM _data, UNNEST(_data.col) AS col WHERE col.a = 1",
         )
 
+        struct_array_type = exp.maybe_parse(
+            "STRUCT(k TEXT, v STRUCT(v_str TEXT, v_int INT, v_int_arr INT[]))[]",
+            into=exp.DataType,
+            dialect="duckdb",
+        )
+        self.assertEqual(
+            struct_array_type.sql("duckdb"),
+            "STRUCT(k TEXT, v STRUCT(v_str TEXT, v_int INT, v_int_arr INT[]))[]",
+        )
+
+        self.validate_all(
+            "CAST(x AS UUID)",
+            write={
+                "bigquery": "CAST(x AS STRING)",
+                "duckdb": "CAST(x AS UUID)",
+            },
+        )
         self.validate_all(
             """SELECT CASE WHEN JSON_VALID('{"x: 1}') THEN '{"x: 1}' ELSE NULL END""",
             read={
@@ -239,6 +256,10 @@ class TestDuckDB(Validator):
             parse_one("a // b", read="duckdb").assert_is(exp.IntDiv).sql(dialect="duckdb"), "a // b"
         )
 
+        self.validate_identity("SELECT UNNEST([1, 2])").selects[0].assert_is(exp.UDTF)
+        self.validate_identity("'red' IN flags").args["field"].assert_is(exp.Column)
+        self.validate_identity("'red' IN tbl.flags")
+        self.validate_identity("CREATE TABLE tbl1 (u UNION(num INT, str TEXT))")
         self.validate_identity("INSERT INTO x BY NAME SELECT 1 AS y")
         self.validate_identity("SELECT 1 AS x UNION ALL BY NAME SELECT 2 AS x")
         self.validate_identity("SELECT SUM(x) FILTER (x = 1)", "SELECT SUM(x) FILTER(WHERE x = 1)")
@@ -277,6 +298,9 @@ class TestDuckDB(Validator):
         self.validate_identity("SUMMARIZE tbl").assert_is(exp.Summarize)
         self.validate_identity("SUMMARIZE SELECT * FROM tbl").assert_is(exp.Summarize)
         self.validate_identity("CREATE TABLE tbl_summary AS SELECT * FROM (SUMMARIZE tbl)")
+        self.validate_identity("UNION_VALUE(k1 := 1)").find(exp.PropertyEQ).this.assert_is(
+            exp.Identifier
+        )
         self.validate_identity(
             "SELECT species, island, COUNT(*) FROM t GROUP BY GROUPING SETS (species), GROUPING SETS (island)"
         )
@@ -291,6 +315,13 @@ class TestDuckDB(Validator):
         ).assert_is(exp.Summarize)
         self.validate_identity(
             "SELECT * FROM x LEFT JOIN UNNEST(y)", "SELECT * FROM x LEFT JOIN UNNEST(y) ON TRUE"
+        )
+        self.validate_identity(
+            """SELECT '{ "family": "anatidae", "species": [ "duck", "goose", "swan", null ] }' ->> ['$.family', '$.species']""",
+        )
+        self.validate_identity(
+            """SELECT JSON_EXTRACT_STRING('{ "family": "anatidae", "species": [ "duck", "goose", "swan", null ] }', ['$.family', '$.species'])""",
+            """SELECT '{ "family": "anatidae", "species": [ "duck", "goose", "swan", null ] }' ->> ['$.family', '$.species']""",
         )
         self.validate_identity(
             "SELECT col FROM t WHERE JSON_EXTRACT_STRING(col, '$.id') NOT IN ('b')",
@@ -507,8 +538,8 @@ class TestDuckDB(Validator):
             write={
                 "duckdb": "STR_SPLIT(x, 'a')",
                 "presto": "SPLIT(x, 'a')",
-                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a'))",
-                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a'))",
+                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a', '\\\\E'))",
+                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a', '\\\\E'))",
             },
         )
         self.validate_all(
@@ -516,8 +547,8 @@ class TestDuckDB(Validator):
             write={
                 "duckdb": "STR_SPLIT(x, 'a')",
                 "presto": "SPLIT(x, 'a')",
-                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a'))",
-                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a'))",
+                "hive": "SPLIT(x, CONCAT('\\\\Q', 'a', '\\\\E'))",
+                "spark": "SPLIT(x, CONCAT('\\\\Q', 'a', '\\\\E'))",
             },
         )
         self.validate_all(
@@ -586,12 +617,6 @@ class TestDuckDB(Validator):
             "LIST_SUM([1, 2])",
             read={
                 "spark": "ARRAY_SUM(ARRAY(1, 2))",
-            },
-        )
-        self.validate_all(
-            "IF((y) <> 0, (x) / (y), NULL)",
-            read={
-                "bigquery": "SAFE_DIVIDE(x, y)",
             },
         )
         self.validate_all(
@@ -727,14 +752,6 @@ class TestDuckDB(Validator):
                 "snowflake": "SELECT PERCENTILE_DISC(q) WITHIN GROUP (ORDER BY x) FROM t",
             },
         )
-        self.validate_all(
-            "SELECT MEDIAN(x) FROM t",
-            write={
-                "duckdb": "SELECT QUANTILE_CONT(x, 0.5) FROM t",
-                "postgres": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) FROM t",
-                "snowflake": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) FROM t",
-            },
-        )
 
         with self.assertRaises(UnsupportedError):
             transpile(
@@ -809,6 +826,49 @@ class TestDuckDB(Validator):
         self.validate_identity("SELECT ARRAY[1, 2, 3]", "SELECT [1, 2, 3]")
 
         self.validate_identity("SELECT * FROM (DESCRIBE t)")
+
+        self.validate_identity("SELECT UNNEST([*COLUMNS('alias_.*')]) AS column_name")
+        self.validate_identity(
+            "SELECT COALESCE(*COLUMNS(*)) FROM (SELECT NULL, 2, 3) AS t(a, b, c)"
+        )
+        self.validate_identity(
+            "SELECT id, STRUCT_PACK(*COLUMNS('m\\d')) AS measurements FROM many_measurements",
+            """SELECT id, {'_0': *COLUMNS('m\\d')} AS measurements FROM many_measurements""",
+        )
+        self.validate_identity("SELECT COLUMNS(c -> c LIKE '%num%') FROM numbers")
+        self.validate_identity(
+            "SELECT MIN(COLUMNS(* REPLACE (number + id AS number))), COUNT(COLUMNS(* EXCLUDE (number))) FROM numbers"
+        )
+        self.validate_identity("SELECT COLUMNS(*) + COLUMNS(*) FROM numbers")
+        self.validate_identity("SELECT COLUMNS('(id|numbers?)') FROM numbers")
+        self.validate_identity(
+            "SELECT COALESCE(COLUMNS(['a', 'b', 'c'])) AS result FROM (SELECT NULL AS a, 42 AS b, TRUE AS c)"
+        )
+        self.validate_identity(
+            "SELECT COALESCE(*COLUMNS(['a', 'b', 'c'])) AS result FROM (SELECT NULL AS a, 42 AS b, TRUE AS c)"
+        )
+        self.validate_all(
+            "SELECT UNNEST(foo) AS x",
+            write={
+                "redshift": UnsupportedError,
+            },
+        )
+        self.validate_identity("a ^ b", "POWER(a, b)")
+        self.validate_identity("a ** b", "POWER(a, b)")
+        self.validate_identity("a ~~~ b", "a GLOB b")
+        self.validate_identity("a ~~ b", "a LIKE b")
+        self.validate_identity("a @> b")
+        self.validate_identity("a <@ b", "b @> a")
+        self.validate_identity("a && b").assert_is(exp.ArrayOverlaps)
+        self.validate_identity("a ^@ b", "STARTS_WITH(a, b)")
+        self.validate_identity(
+            "a !~~ b",
+            "NOT a LIKE b",
+        )
+        self.validate_identity(
+            "a !~~* b",
+            "NOT a ILIKE b",
+        )
 
     def test_array_index(self):
         with self.assertLogs(helper_logger) as cm:
@@ -918,6 +978,15 @@ class TestDuckDB(Validator):
                 "spark": "DATE_FORMAT(x, 'yy-M-ss')",
             },
         )
+
+        self.validate_all(
+            "SHA1(x)",
+            write={
+                "duckdb": "SHA1(x)",
+                "": "SHA(x)",
+            },
+        )
+
         self.validate_all(
             "STRFTIME(x, '%Y-%m-%d %H:%M:%S')",
             write={
@@ -1037,6 +1106,7 @@ class TestDuckDB(Validator):
         self.validate_identity("CAST(x AS INT16)", "CAST(x AS SMALLINT)")
         self.validate_identity("CAST(x AS NUMERIC(1, 2))", "CAST(x AS DECIMAL(1, 2))")
         self.validate_identity("CAST(x AS HUGEINT)", "CAST(x AS INT128)")
+        self.validate_identity("CAST(x AS UHUGEINT)", "CAST(x AS UINT128)")
         self.validate_identity("CAST(x AS CHAR)", "CAST(x AS TEXT)")
         self.validate_identity("CAST(x AS BPCHAR)", "CAST(x AS TEXT)")
         self.validate_identity("CAST(x AS STRING)", "CAST(x AS TEXT)")

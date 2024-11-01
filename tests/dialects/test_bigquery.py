@@ -22,6 +22,8 @@ class TestBigQuery(Validator):
     maxDiff = None
 
     def test_bigquery(self):
+        self.validate_identity("REGEXP_EXTRACT(x, '(?<)')")
+
         self.validate_all(
             "EXTRACT(HOUR FROM DATETIME(2008, 12, 25, 15, 30, 00))",
             write={
@@ -105,6 +107,7 @@ LANGUAGE js AS
         select_with_quoted_udf = self.validate_identity("SELECT `p.d.UdF`(data) FROM `p.d.t`")
         self.assertEqual(select_with_quoted_udf.selects[0].name, "p.d.UdF")
 
+        self.validate_identity("SELECT ARRAY_CONCAT([1])")
         self.validate_identity("SELECT * FROM READ_CSV('bla.csv')")
         self.validate_identity("CAST(x AS STRUCT<list ARRAY<INT64>>)")
         self.validate_identity("assert.true(1 = 1)")
@@ -191,6 +194,12 @@ LANGUAGE js AS
         self.validate_identity("CAST(x AS NVARCHAR)", "CAST(x AS STRING)")
         self.validate_identity("CAST(x AS TIMESTAMPTZ)", "CAST(x AS TIMESTAMP)")
         self.validate_identity("CAST(x AS RECORD)", "CAST(x AS STRUCT)")
+        self.validate_identity("EDIT_DISTANCE('a', 'a', max_distance => 2)").assert_is(
+            exp.Levenshtein
+        )
+        self.validate_identity(
+            "MERGE INTO dataset.NewArrivals USING (SELECT * FROM UNNEST([('microwave', 10, 'warehouse #1'), ('dryer', 30, 'warehouse #1'), ('oven', 20, 'warehouse #2')])) ON FALSE WHEN NOT MATCHED THEN INSERT ROW WHEN NOT MATCHED BY SOURCE THEN DELETE"
+        )
         self.validate_identity(
             "SELECT * FROM `SOME_PROJECT_ID.SOME_DATASET_ID.INFORMATION_SCHEMA.SOME_VIEW`"
         )
@@ -297,6 +306,13 @@ LANGUAGE js AS
         )
 
         self.validate_all(
+            "EDIT_DISTANCE(a, b)",
+            write={
+                "bigquery": "EDIT_DISTANCE(a, b)",
+                "duckdb": "LEVENSHTEIN(a, b)",
+            },
+        )
+        self.validate_all(
             "SAFE_CAST(some_date AS DATE FORMAT 'DD MONTH YYYY')",
             write={
                 "bigquery": "SAFE_CAST(some_date AS DATE FORMAT 'DD MONTH YYYY')",
@@ -355,7 +371,16 @@ LANGUAGE js AS
             write={
                 "bigquery": "TIMESTAMP(x)",
                 "duckdb": "CAST(x AS TIMESTAMPTZ)",
+                "snowflake": "CAST(x AS TIMESTAMPTZ)",
                 "presto": "CAST(x AS TIMESTAMP WITH TIME ZONE)",
+            },
+        )
+        self.validate_all(
+            "SELECT TIMESTAMP('2008-12-25 15:30:00', 'America/Los_Angeles')",
+            write={
+                "bigquery": "SELECT TIMESTAMP('2008-12-25 15:30:00', 'America/Los_Angeles')",
+                "duckdb": "SELECT CAST('2008-12-25 15:30:00' AS TIMESTAMP) AT TIME ZONE 'America/Los_Angeles'",
+                "snowflake": "SELECT CONVERT_TIMEZONE('America/Los_Angeles', CAST('2008-12-25 15:30:00' AS TIMESTAMP))",
             },
         )
         self.validate_all(
@@ -664,6 +689,7 @@ LANGUAGE js AS
                 "databricks": "SELECT DATE_ADD(MINUTE, '10', CAST('2008-12-25 15:30:00+00' AS TIMESTAMP))",
                 "mysql": "SELECT DATE_ADD(TIMESTAMP('2008-12-25 15:30:00+00'), INTERVAL '10' MINUTE)",
                 "spark": "SELECT DATE_ADD(MINUTE, '10', CAST('2008-12-25 15:30:00+00' AS TIMESTAMP))",
+                "snowflake": "SELECT TIMESTAMPADD(MINUTE, '10', CAST('2008-12-25 15:30:00+00' AS TIMESTAMPTZ))",
             },
         )
         self.validate_all(
@@ -671,6 +697,14 @@ LANGUAGE js AS
             write={
                 "bigquery": "SELECT TIMESTAMP_SUB(CAST('2008-12-25 15:30:00+00' AS TIMESTAMP), INTERVAL '10' MINUTE)",
                 "mysql": "SELECT DATE_SUB(TIMESTAMP('2008-12-25 15:30:00+00'), INTERVAL '10' MINUTE)",
+                "snowflake": "SELECT TIMESTAMPADD(MINUTE, '10' * -1, CAST('2008-12-25 15:30:00+00' AS TIMESTAMPTZ))",
+            },
+        )
+        self.validate_all(
+            'SELECT TIMESTAMP_SUB(TIMESTAMP "2008-12-25 15:30:00+00", INTERVAL col MINUTE)',
+            write={
+                "bigquery": "SELECT TIMESTAMP_SUB(CAST('2008-12-25 15:30:00+00' AS TIMESTAMP), INTERVAL col MINUTE)",
+                "snowflake": "SELECT TIMESTAMPADD(MINUTE, col * -1, CAST('2008-12-25 15:30:00+00' AS TIMESTAMPTZ))",
             },
         )
         self.validate_all(
@@ -1498,6 +1532,39 @@ WHERE
                 "duckdb": "SELECT ARRAY_TO_STRING(LIST_TRANSFORM(['cake', 'pie', NULL], x -> COALESCE(x, 'MISSING')), '--') AS text",
             },
         )
+        self.validate_all(
+            "STRING(a)",
+            write={
+                "bigquery": "STRING(a)",
+                "snowflake": "CAST(a AS VARCHAR)",
+                "duckdb": "CAST(a AS TEXT)",
+            },
+        )
+        self.validate_all(
+            "STRING('2008-12-25 15:30:00', 'America/New_York')",
+            write={
+                "bigquery": "STRING('2008-12-25 15:30:00', 'America/New_York')",
+                "snowflake": "CAST(CONVERT_TIMEZONE('UTC', 'America/New_York', '2008-12-25 15:30:00') AS VARCHAR)",
+                "duckdb": "CAST(CAST('2008-12-25 15:30:00' AS TIMESTAMP) AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' AS TEXT)",
+            },
+        )
+
+        self.validate_identity("SELECT * FROM a-b c", "SELECT * FROM a-b AS c")
+
+        self.validate_all(
+            "SAFE_DIVIDE(x, y)",
+            write={
+                "bigquery": "SAFE_DIVIDE(x, y)",
+                "duckdb": "IF((y) <> 0, (x) / (y), NULL)",
+                "presto": "IF((y) <> 0, (x) / (y), NULL)",
+                "trino": "IF((y) <> 0, (x) / (y), NULL)",
+                "hive": "IF((y) <> 0, (x) / (y), NULL)",
+                "spark2": "IF((y) <> 0, (x) / (y), NULL)",
+                "spark": "IF((y) <> 0, (x) / (y), NULL)",
+                "databricks": "IF((y) <> 0, (x) / (y), NULL)",
+                "snowflake": "IFF((y) <> 0, (x) / (y), NULL)",
+            },
+        )
 
     def test_errors(self):
         with self.assertRaises(TokenError):
@@ -1955,3 +2022,40 @@ OPTIONS (
                 "duckdb": "WITH Races AS (SELECT '800M' AS race) SELECT race, participant FROM Races AS r CROSS JOIN (SELECT UNNEST([{'name': 'Rudisha', 'laps': [23.4, 26.3, 26.4, 26.1]}], max_depth => 2)) AS participant",
             },
         )
+
+    def test_range_type(self):
+        for type, value in (
+            ("RANGE<DATE>", "'[2020-01-01, 2020-12-31)'"),
+            ("RANGE<DATE>", "'[UNBOUNDED, 2020-12-31)'"),
+            ("RANGE<DATETIME>", "'[2020-01-01 12:00:00, 2020-12-31 12:00:00)'"),
+            ("RANGE<TIMESTAMP>", "'[2020-10-01 12:00:00+08, 2020-12-31 12:00:00+08)'"),
+        ):
+            with self.subTest(f"Testing BigQuery's RANGE<T> type: {type} {value}"):
+                self.validate_identity(f"SELECT {type} {value}", f"SELECT CAST({value} AS {type})")
+
+                self.assertEqual(self.parse_one(type), exp.DataType.build(type, dialect="bigquery"))
+
+        self.validate_identity(
+            "SELECT RANGE(CAST('2022-12-01' AS DATE), CAST('2022-12-31' AS DATE))"
+        )
+        self.validate_identity("SELECT RANGE(NULL, CAST('2022-12-31' AS DATE))")
+        self.validate_identity(
+            "SELECT RANGE(CAST('2022-10-01 14:53:27' AS DATETIME), CAST('2022-10-01 16:00:00' AS DATETIME))"
+        )
+        self.validate_identity(
+            "SELECT RANGE(CAST('2022-10-01 14:53:27 America/Los_Angeles' AS TIMESTAMP), CAST('2022-10-01 16:00:00 America/Los_Angeles' AS TIMESTAMP))"
+        )
+
+    def test_null_ordering(self):
+        # Aggregate functions allow "NULLS FIRST" only with ascending order and
+        # "NULLS LAST" only with descending
+        for sort_order, null_order in (("ASC", "NULLS LAST"), ("DESC", "NULLS FIRST")):
+            self.validate_all(
+                f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
+                read={
+                    "": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order} {null_order}) AS ids FROM colors GROUP BY 1"
+                },
+                write={
+                    "bigquery": f"SELECT color, ARRAY_AGG(id ORDER BY id {sort_order}) AS ids FROM colors GROUP BY 1",
+                },
+            )

@@ -87,6 +87,7 @@ class Databricks(Spark):
                 [
                     transforms.eliminate_distinct_on,
                     transforms.unnest_to_explode,
+                    transforms.any_to_exists,
                 ]
             ),
             exp.JSONExtract: _jsonextract_sql,
@@ -115,3 +116,7 @@ class Databricks(Spark):
         ) -> str:
             expression.set("this", True)  # trigger ALWAYS in super class
             return super().generatedasidentitycolumnconstraint_sql(expression)
+
+        def jsonpath_sql(self, expression: exp.JSONPath) -> str:
+            expression.set("escape", None)
+            return super().jsonpath_sql(expression)

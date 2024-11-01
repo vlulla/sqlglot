@@ -73,6 +73,7 @@ class StarRocks(MySQL):
     class Generator(MySQL.Generator):
         EXCEPT_INTERSECT_SUPPORT_ALL_CLAUSE = False
         JSON_TYPE_REQUIRED_FOR_EXTRACTION = False
+        VARCHAR_REQUIRES_SIZE = False
         PARSE_JSON_NAME: t.Optional[str] = "PARSE_JSON"
         WITH_PROPERTIES_PREFIX = "PROPERTIES"
 
@@ -106,6 +107,7 @@ class StarRocks(MySQL):
             exp.TimeStrToDate: rename_func("TO_DATE"),
             exp.UnixToStr: lambda self, e: self.func("FROM_UNIXTIME", e.this, self.format_time(e)),
             exp.UnixToTime: rename_func("FROM_UNIXTIME"),
+            exp.ArrayFilter: rename_func("ARRAY_FILTER"),
         }
 
         TRANSFORMS.pop(exp.DateTrunc)

@@ -67,7 +67,20 @@ class TestOracle(Validator):
             "SELECT COUNT(1) INTO V_Temp FROM TABLE(CAST(somelist AS data_list)) WHERE col LIKE '%contact'"
         )
         self.validate_identity(
+            "SELECT department_id INTO v_department_id FROM departments FETCH FIRST 1 ROWS ONLY"
+        )
+        self.validate_identity(
+            "SELECT department_id BULK COLLECT INTO v_department_ids FROM departments"
+        )
+        self.validate_identity(
+            "SELECT department_id, department_name BULK COLLECT INTO v_department_ids, v_department_names FROM departments"
+        )
+        self.validate_identity(
             "SELECT MIN(column_name) KEEP (DENSE_RANK FIRST ORDER BY column_name DESC) FROM table_name"
+        )
+        self.validate_identity(
+            "SELECT TRUNC(SYSDATE)",
+            "SELECT TRUNC(SYSDATE, 'DD')",
         )
         self.validate_identity(
             """SELECT JSON_OBJECT(KEY 'key1' IS emp.column1, KEY 'key2' IS emp.column1) "emp_key" FROM emp""",
@@ -99,10 +112,11 @@ class TestOracle(Validator):
         )
 
         self.validate_all(
-            "TRUNC(SYSDATE, 'YEAR')",
+            "SELECT department_id, department_name INTO v_department_id, v_department_name FROM departments FETCH FIRST 1 ROWS ONLY",
             write={
-                "clickhouse": "DATE_TRUNC('YEAR', CURRENT_TIMESTAMP())",
-                "oracle": "TRUNC(SYSDATE, 'YEAR')",
+                "oracle": "SELECT department_id, department_name INTO v_department_id, v_department_name FROM departments FETCH FIRST 1 ROWS ONLY",
+                "postgres": UnsupportedError,
+                "tsql": UnsupportedError,
             },
         )
         self.validate_all(
@@ -308,6 +322,57 @@ class TestOracle(Validator):
         )
         self.validate_identity("INSERT /*+ APPEND */ INTO IAP_TBL (id, col1) VALUES (2, 'test2')")
         self.validate_identity("INSERT /*+ APPEND_VALUES */ INTO dest_table VALUES (i, 'Value')")
+        self.validate_identity(
+            "SELECT /*+ LEADING(departments employees) USE_NL(employees) */ * FROM employees JOIN departments ON employees.department_id = departments.department_id",
+            """SELECT /*+ LEADING(departments employees)
+  USE_NL(employees) */
+  *
+FROM employees
+JOIN departments
+  ON employees.department_id = departments.department_id""",
+            pretty=True,
+        )
+        self.validate_identity(
+            "SELECT /*+ USE_NL(bbbbbbbbbbbbbbbbbbbbbbbb) LEADING(aaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccc dddddddddddddddddddddddd) INDEX(cccccccccccccccccccccccc) */ * FROM aaaaaaaaaaaaaaaaaaaaaaaa JOIN bbbbbbbbbbbbbbbbbbbbbbbb ON aaaaaaaaaaaaaaaaaaaaaaaa.id = bbbbbbbbbbbbbbbbbbbbbbbb.a_id JOIN cccccccccccccccccccccccc ON bbbbbbbbbbbbbbbbbbbbbbbb.id = cccccccccccccccccccccccc.b_id JOIN dddddddddddddddddddddddd ON cccccccccccccccccccccccc.id = dddddddddddddddddddddddd.c_id",
+        )
+        self.validate_identity(
+            "SELECT /*+ USE_NL(bbbbbbbbbbbbbbbbbbbbbbbb) LEADING(aaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbb cccccccccccccccccccccccc dddddddddddddddddddddddd) INDEX(cccccccccccccccccccccccc) */ * FROM aaaaaaaaaaaaaaaaaaaaaaaa JOIN bbbbbbbbbbbbbbbbbbbbbbbb ON aaaaaaaaaaaaaaaaaaaaaaaa.id = bbbbbbbbbbbbbbbbbbbbbbbb.a_id JOIN cccccccccccccccccccccccc ON bbbbbbbbbbbbbbbbbbbbbbbb.id = cccccccccccccccccccccccc.b_id JOIN dddddddddddddddddddddddd ON cccccccccccccccccccccccc.id = dddddddddddddddddddddddd.c_id",
+            """SELECT /*+ USE_NL(bbbbbbbbbbbbbbbbbbbbbbbb)
+  LEADING(
+    aaaaaaaaaaaaaaaaaaaaaaaa
+    bbbbbbbbbbbbbbbbbbbbbbbb
+    cccccccccccccccccccccccc
+    dddddddddddddddddddddddd
+  )
+  INDEX(cccccccccccccccccccccccc) */
+  *
+FROM aaaaaaaaaaaaaaaaaaaaaaaa
+JOIN bbbbbbbbbbbbbbbbbbbbbbbb
+  ON aaaaaaaaaaaaaaaaaaaaaaaa.id = bbbbbbbbbbbbbbbbbbbbbbbb.a_id
+JOIN cccccccccccccccccccccccc
+  ON bbbbbbbbbbbbbbbbbbbbbbbb.id = cccccccccccccccccccccccc.b_id
+JOIN dddddddddddddddddddddddd
+  ON cccccccccccccccccccccccc.id = dddddddddddddddddddddddd.c_id""",
+            pretty=True,
+        )
+        # Test that parsing error with keywords like select where etc falls back
+        self.validate_identity(
+            "SELECT /*+ LEADING(departments employees) USE_NL(employees) select where group by is order by */ * FROM employees JOIN departments ON employees.department_id = departments.department_id",
+            """SELECT /*+ LEADING(departments employees) USE_NL(employees) select where group by is order by */
+  *
+FROM employees
+JOIN departments
+  ON employees.department_id = departments.department_id""",
+            pretty=True,
+        )
+        # Test that parsing error with , inside hint function falls back
+        self.validate_identity(
+            "SELECT /*+ LEADING(departments, employees) */ * FROM employees JOIN departments ON employees.department_id = departments.department_id"
+        )
+        # Test that parsing error with keyword inside hint function falls back
+        self.validate_identity(
+            "SELECT /*+ LEADING(departments select) */ * FROM employees JOIN departments ON employees.department_id = departments.department_id"
+        )
 
     def test_xml_table(self):
         self.validate_identity("XMLTABLE('x')")
@@ -542,3 +607,38 @@ WHERE
                         self.validate_identity(
                             f"SELECT * FROM t WHERE JSON_EXISTS(name{format_json}, '$[1].middle'{passing}{on_cond})"
                         )
+
+    def test_grant(self):
+        grant_cmds = [
+            "GRANT purchases_reader_role TO george, maria",
+            "GRANT USAGE ON TYPE price TO finance_role",
+            "GRANT USAGE ON DERBY AGGREGATE types.maxPrice TO sales_role",
+        ]
+
+        for sql in grant_cmds:
+            with self.subTest(f"Testing Oracles's GRANT command statement: {sql}"):
+                self.validate_identity(sql, check_command_warning=True)
+
+        self.validate_identity("GRANT SELECT ON TABLE t TO maria, harry")
+        self.validate_identity("GRANT SELECT ON TABLE s.v TO PUBLIC")
+        self.validate_identity("GRANT SELECT ON TABLE t TO purchases_reader_role")
+        self.validate_identity("GRANT UPDATE, TRIGGER ON TABLE t TO anita, zhi")
+        self.validate_identity("GRANT EXECUTE ON PROCEDURE p TO george")
+        self.validate_identity("GRANT USAGE ON SEQUENCE order_id TO sales_role")
+
+    def test_datetrunc(self):
+        self.validate_all(
+            "TRUNC(SYSDATE, 'YEAR')",
+            write={
+                "clickhouse": "DATE_TRUNC('YEAR', CURRENT_TIMESTAMP())",
+                "oracle": "TRUNC(SYSDATE, 'YEAR')",
+            },
+        )
+
+        # Make sure units are not normalized e.g 'Q' -> 'QUARTER' and 'W' -> 'WEEK'
+        # https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/ROUND-and-TRUNC-Date-Functions.html
+        for unit in (
+            "'Q'",
+            "'W'",
+        ):
+            self.validate_identity(f"TRUNC(x, {unit})")

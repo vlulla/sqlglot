@@ -131,9 +131,8 @@ def _json_format_sql(self: Hive.Generator, expression: exp.JSONFormat) -> str:
     return self.func("TO_JSON", this, expression.args.get("options"))
 
 
+@generator.unsupported_args(("expression", "Hive's SORT_ARRAY does not support a comparator."))
 def _array_sort_sql(self: Hive.Generator, expression: exp.ArraySort) -> str:
-    if expression.expression:
-        self.unsupported("Hive SORT_ARRAY does not support a comparator")
     return self.func("SORT_ARRAY", expression.this)
 
 
@@ -334,6 +333,9 @@ class Hive(Dialect):
             "TRANSFORM": lambda self: self._parse_transform(),
         }
 
+        NO_PAREN_FUNCTIONS = parser.Parser.NO_PAREN_FUNCTIONS.copy()
+        NO_PAREN_FUNCTIONS.pop(TokenType.CURRENT_TIME)
+
         PROPERTY_PARSERS = {
             **parser.Parser.PROPERTY_PARSERS,
             "SERDEPROPERTIES": lambda self: exp.SerdeProperties(
@@ -458,6 +460,7 @@ class Hive(Dialect):
         WITH_PROPERTIES_PREFIX = "TBLPROPERTIES"
         PARSE_JSON_NAME = None
         PAD_FILL_PATTERN_IS_REQUIRED = True
+        SUPPORTS_MEDIAN = False
 
         EXPRESSIONS_WITHOUT_NESTED_CTES = {
             exp.Insert,
@@ -547,13 +550,14 @@ class Hive(Dialect):
             exp.SchemaCommentProperty: lambda self, e: self.naked_property(e),
             exp.ArrayUniqueAgg: rename_func("COLLECT_SET"),
             exp.Split: lambda self, e: self.func(
-                "SPLIT", e.this, self.func("CONCAT", "'\\\\Q'", e.expression)
+                "SPLIT", e.this, self.func("CONCAT", "'\\\\Q'", e.expression, "'\\\\E'")
             ),
             exp.Select: transforms.preprocess(
                 [
                     transforms.eliminate_qualify,
                     transforms.eliminate_distinct_on,
                     partial(transforms.unnest_to_explode, unnest_using_arrays_zip=False),
+                    transforms.any_to_exists,
                 ]
             ),
             exp.StrPosition: strposition_to_locate_sql,
@@ -707,3 +711,9 @@ class Hive(Dialect):
             exprs = self.expressions(expression, flat=True)
 
             return f"{prefix}SERDEPROPERTIES ({exprs})"
+
+        def exists_sql(self, expression: exp.Exists):
+            if expression.expression:
+                return self.function_fallback_sql(expression)
+
+            return super().exists_sql(expression)

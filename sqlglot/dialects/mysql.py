@@ -187,6 +187,9 @@ class MySQL(Dialect):
         KEYWORDS = {
             **tokens.Tokenizer.KEYWORDS,
             "CHARSET": TokenType.CHARACTER_SET,
+            # The DESCRIBE and EXPLAIN statements are synonyms.
+            # https://dev.mysql.com/doc/refman/8.4/en/explain.html
+            "EXPLAIN": TokenType.DESCRIBE,
             "FORCE": TokenType.FORCE,
             "IGNORE": TokenType.IGNORE,
             "KEY": TokenType.KEY,
@@ -300,7 +303,6 @@ class MySQL(Dialect):
             "DAYOFMONTH": lambda args: exp.DayOfMonth(this=exp.TsOrDsToDate(this=seq_get(args, 0))),
             "DAYOFWEEK": lambda args: exp.DayOfWeek(this=exp.TsOrDsToDate(this=seq_get(args, 0))),
             "DAYOFYEAR": lambda args: exp.DayOfYear(this=exp.TsOrDsToDate(this=seq_get(args, 0))),
-            "INSTR": lambda args: exp.StrPosition(substr=seq_get(args, 1), this=seq_get(args, 0)),
             "FROM_UNIXTIME": build_formatted_time(exp.UnixToTime, "mysql"),
             "ISNULL": isnull_to_is_null,
             "LOCATE": locate_to_strposition,
@@ -329,7 +331,11 @@ class MySQL(Dialect):
 
         FUNCTION_PARSERS = {
             **parser.Parser.FUNCTION_PARSERS,
-            "CHAR": lambda self: self._parse_chr(),
+            "CHAR": lambda self: self.expression(
+                exp.Chr,
+                expressions=self._parse_csv(self._parse_assignment),
+                charset=self._match(TokenType.USING) and self._parse_var(),
+            ),
             "GROUP_CONCAT": lambda self: self._parse_group_concat(),
             # https://dev.mysql.com/doc/refman/5.7/en/miscellaneous-functions.html#function_values
             "VALUES": lambda self: self.expression(
@@ -448,6 +454,17 @@ class MySQL(Dialect):
         ENUM_TYPE_TOKENS = {
             *parser.Parser.ENUM_TYPE_TOKENS,
             TokenType.SET,
+        }
+
+        # SELECT [ ALL | DISTINCT | DISTINCTROW ] [ <OPERATION_MODIFIERS> ]
+        OPERATION_MODIFIERS = {
+            "HIGH_PRIORITY",
+            "STRAIGHT_JOIN",
+            "SQL_SMALL_RESULT",
+            "SQL_BIG_RESULT",
+            "SQL_BUFFER_RESULT",
+            "SQL_NO_CACHE",
+            "SQL_CALC_FOUND_ROWS",
         }
 
         LOG_DEFAULTS_TO_LN = True
@@ -620,18 +637,6 @@ class MySQL(Dialect):
                 parse_interval=parse_interval, fallback_to_identifier=fallback_to_identifier
             )
 
-        def _parse_chr(self) -> t.Optional[exp.Expression]:
-            expressions = self._parse_csv(self._parse_assignment)
-            kwargs: t.Dict[str, t.Any] = {"this": seq_get(expressions, 0)}
-
-            if len(expressions) > 1:
-                kwargs["expressions"] = expressions[1:]
-
-            if self._match(TokenType.USING):
-                kwargs["charset"] = self._parse_var()
-
-            return self.expression(exp.Chr, **kwargs)
-
         def _parse_group_concat(self) -> t.Optional[exp.Expression]:
             def concat_exprs(
                 node: t.Optional[exp.Expression], exprs: t.List[exp.Expression]
@@ -698,6 +703,8 @@ class MySQL(Dialect):
         PARSE_JSON_NAME: t.Optional[str] = None
         PAD_FILL_PATTERN_IS_REQUIRED = True
         WRAP_DERIVED_VALUES = False
+        VARCHAR_REQUIRES_SIZE = True
+        SUPPORTS_MEDIAN = False
 
         TRANSFORMS = {
             **generator.Generator.TRANSFORMS,
@@ -1125,10 +1132,19 @@ class MySQL(Dialect):
             return super().extract_sql(expression)
 
         def datatype_sql(self, expression: exp.DataType) -> str:
+            if (
+                self.VARCHAR_REQUIRES_SIZE
+                and expression.is_type(exp.DataType.Type.VARCHAR)
+                and not expression.expressions
+            ):
+                # `VARCHAR` must always have a size - if it doesn't, we always generate `TEXT`
+                return "TEXT"
+
             # https://dev.mysql.com/doc/refman/8.0/en/numeric-type-syntax.html
             result = super().datatype_sql(expression)
             if expression.this in self.UNSIGNED_TYPE_MAPPING:
                 result = f"{result} UNSIGNED"
+
             return result
 
         def jsonarraycontains_sql(self, expression: exp.JSONArrayContains) -> str:

@@ -350,6 +350,7 @@ class TestExpressions(unittest.TestCase):
         )
 
         self.assertIsInstance(exp.func("instr", "x", "b", dialect="mysql"), exp.StrPosition)
+        self.assertIsInstance(exp.func("instr", "x", "b", dialect="sqlite"), exp.StrPosition)
         self.assertIsInstance(exp.func("bla", 1, "foo"), exp.Anonymous)
         self.assertIsInstance(
             exp.func("cast", this=exp.Literal.number(5), to=exp.DataType.build("DOUBLE")),
@@ -674,6 +675,8 @@ class TestExpressions(unittest.TestCase):
         self.assertIsInstance(parse_one("STR_POSITION(a, 'test')"), exp.StrPosition)
         self.assertIsInstance(parse_one("STR_TO_UNIX(a, 'format')"), exp.StrToUnix)
         self.assertIsInstance(parse_one("STRUCT_EXTRACT(a, 'test')"), exp.StructExtract)
+        self.assertIsInstance(parse_one("SUBSTR('a', 1, 1)"), exp.Substring)
+        self.assertIsInstance(parse_one("SUBSTRING('a', 1, 1)"), exp.Substring)
         self.assertIsInstance(parse_one("SUM(a)"), exp.Sum)
         self.assertIsInstance(parse_one("SQRT(a)"), exp.Sqrt)
         self.assertIsInstance(parse_one("STDDEV(a)"), exp.Stddev)
@@ -932,15 +935,13 @@ FROM foo""",
     def test_to_interval(self):
         self.assertEqual(exp.to_interval("1day").sql(), "INTERVAL '1' DAY")
         self.assertEqual(exp.to_interval("  5     months").sql(), "INTERVAL '5' MONTHS")
-        with self.assertRaises(ValueError):
-            exp.to_interval("bla")
+        self.assertEqual(exp.to_interval("-2 day").sql(), "INTERVAL '-2' DAY")
 
         self.assertEqual(exp.to_interval(exp.Literal.string("1day")).sql(), "INTERVAL '1' DAY")
+        self.assertEqual(exp.to_interval(exp.Literal.string("-2 day")).sql(), "INTERVAL '-2' DAY")
         self.assertEqual(
             exp.to_interval(exp.Literal.string("  5   months")).sql(), "INTERVAL '5' MONTHS"
         )
-        with self.assertRaises(ValueError):
-            exp.to_interval(exp.Literal.string("bla"))
 
     def test_to_table(self):
         table_only = exp.to_table("table_name")
@@ -1035,7 +1036,6 @@ FROM foo""",
         self.assertEqual(exp.DataType.build("GEOGRAPHY").sql(), "GEOGRAPHY")
         self.assertEqual(exp.DataType.build("GEOMETRY").sql(), "GEOMETRY")
         self.assertEqual(exp.DataType.build("STRUCT").sql(), "STRUCT")
-        self.assertEqual(exp.DataType.build("NULLABLE").sql(), "NULLABLE")
         self.assertEqual(exp.DataType.build("HLLSKETCH", dialect="redshift").sql(), "HLLSKETCH")
         self.assertEqual(exp.DataType.build("HSTORE", dialect="postgres").sql(), "HSTORE")
         self.assertEqual(exp.DataType.build("NULL").sql(), "NULL")

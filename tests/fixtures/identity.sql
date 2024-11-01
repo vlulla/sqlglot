@@ -131,7 +131,7 @@ x[ORDINAL(1)][SAFE_OFFSET(2)]
 x GLOB '??-*'
 x GLOB y
 ILIKE(x, 'z')
-x LIKE SUBSTR('abc', 1, 1)
+x LIKE SUBSTRING('abc', 1, 1)
 x LIKE y
 x LIKE a.y
 x LIKE '%y%'
@@ -250,7 +250,6 @@ SELECT LEAD(a, 1) OVER (PARTITION BY a ORDER BY a) AS x
 SELECT LEAD(a, 1, b) OVER (PARTITION BY a ORDER BY a) AS x
 SELECT X((a, b) -> a + b, z -> z) AS x
 SELECT X(a -> a + ("z" - 1))
-SELECT EXISTS(ARRAY(2, 3), x -> x % 2 = 0)
 SELECT test.* FROM test
 SELECT a AS b FROM test
 SELECT "a"."b" FROM "a"
@@ -879,3 +878,8 @@ SELECT COUNT(DISTINCT "foo bar") FROM (SELECT 1 AS "foo bar") AS t
 SELECT vector
 WITH all AS (SELECT 1 AS count) SELECT all.count FROM all
 SELECT rename
+GRANT SELECT ON TABLE tbl TO user
+GRANT SELECT, INSERT ON FUNCTION tbl TO user
+GRANT SELECT ON orders TO ROLE PUBLIC
+GRANT SELECT ON nation TO alice WITH GRANT OPTION
+GRANT DELETE ON SCHEMA finance TO bob

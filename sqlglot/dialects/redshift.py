@@ -134,6 +134,7 @@ class Redshift(Postgres):
             "TOP": TokenType.TOP,
             "UNLOAD": TokenType.COMMAND,
             "VARBYTE": TokenType.VARBINARY,
+            "BINARY VARYING": TokenType.VARBINARY,
         }
         KEYWORDS.pop("VALUES")
 
@@ -156,6 +157,7 @@ class Redshift(Postgres):
         ARRAY_CONCAT_IS_VAR_LEN = False
         SUPPORTS_CONVERT_TIMEZONE = True
         EXCEPT_INTERSECT_SUPPORT_ALL_CLAUSE = False
+        SUPPORTS_MEDIAN = True
 
         # Redshift doesn't have `WITH` as part of their with_properties so we remove it
         WITH_PROPERTIES_PREFIX = " "
@@ -184,6 +186,7 @@ class Redshift(Postgres):
             exp.DateDiff: date_delta_sql("DATEDIFF"),
             exp.DistKeyProperty: lambda self, e: self.func("DISTKEY", e.this),
             exp.DistStyleProperty: lambda self, e: self.naked_property(e),
+            exp.Explode: lambda self, e: self.explode_sql(e),
             exp.FromBase: rename_func("STRTOL"),
             exp.GeneratedAsIdentityColumnConstraint: generatedasidentitycolumnconstraint_sql,
             exp.JSONExtract: json_extract_segments("JSON_EXTRACT_PATH_TEXT"),
@@ -388,11 +391,16 @@ class Redshift(Postgres):
             args = expression.expressions
             num_args = len(args)
 
-            if num_args > 1:
+            if num_args != 1:
                 self.unsupported(f"Unsupported number of arguments in UNNEST: {num_args}")
                 return ""
 
+            if isinstance(expression.find_ancestor(exp.From, exp.Join, exp.Select), exp.Select):
+                self.unsupported("Unsupported UNNEST when not used in FROM/JOIN clauses")
+                return ""
+
             arg = self.sql(seq_get(args, 0))
+
             alias = self.expressions(expression.args.get("alias"), key="columns", flat=True)
             return f"{arg} AS {alias}" if alias else arg
 
@@ -434,3 +442,7 @@ class Redshift(Postgres):
                 return super().array_sql(expression)
 
             return rename_func("ARRAY")(self, expression)
+
+        def explode_sql(self, expression: exp.Explode) -> str:
+            self.unsupported("Unsupported EXPLODE() function")
+            return ""
